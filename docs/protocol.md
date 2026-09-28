@@ -48,3 +48,25 @@ type MediaState = "idle" | "joining" | "joined" | "leaving" | "destroyed";
 ```
 
 `track`/remote playback handle are browser-specific at the browser entry; core uses an opaque media-track port, never imports DOM globals. Browser adaptation helpers convert native tracks. Adapters must provide proper ordered per-peer negotiation, early-ICE buffering and deterministic disposal. Data channel messages are application data, never OS input commands.
+
+## Native media protocol
+
+The native engine reserves camera/video, screen/video and microphone/audio slots once per peer. Only the smaller authenticated peer ID creates the offer and ordered data channel. The answerer adopts the offered transceivers; it does not create competing slots. A native description includes exactly three distinct kind/MID bindings:
+
+```json
+{"type":"description","description":{"type":"offer","sdp":"…","slots":[{"kind":"camera","mid":"0"},{"kind":"screen","mid":"1"},{"kind":"microphone","mid":"2"}]}}
+```
+
+The MID strings above are examples, not assigned constants. The adapter validates the bindings against actual negotiated transceivers and checks the answer preserves them. Publishing and removing sources attaches/detaches existing senders without a new SDP exchange. Slot count and kind are fixed for the peer lifetime; source identity may change.
+
+After negotiation and every publication change, the runtime sends the full active manifest for that peer:
+
+```json
+{"type":"sources","revision":3,"sources":[{"id":"camera-2","kind":"camera","mid":"0"}]}
+```
+
+An empty `sources` array clears remote publications. There are at most three entries, with distinct IDs, kinds and MIDs. IDs/MIDs are nonempty, at most 128 UTF-8 bytes and contain no control characters. Every kind/MID must match the negotiated slots. The runtime ignores older revisions; malformed current manifests close that peer and emit an error. Receiver tracks stay alive across unpublish/re-publish. A manifest identifies a publication, but cannot mark the exact boundary between already queued RTP frames and a new source.
+
+The Rust `NativeMediaClient` owns `publish(id, source)`, `unpublish(id)` and `media_stats()` alongside data/session commands. Publishing consumes the source even if rejected; deterministic source cleanup belongs to the runtime and the injected source's close/Drop contracts. Stats expose scalar diagnostic observations, never decoded buffers, and currently stay in the Rust API. The TypeScript facade exposes readonly `localSources$` and `remoteSources$` from authoritative snapshots; it has no capture command or raw-frame IPC API.
+
+The signaling server routes these payloads only between authenticated members and remains media-agnostic. Browser publication negotiation uses its own internal track protocol. Mixed browser/native media interoperability is not supported by this fixed-slot native protocol.

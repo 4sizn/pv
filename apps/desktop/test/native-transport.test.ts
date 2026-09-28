@@ -1,13 +1,15 @@
 import { expect, test } from "bun:test";
-import type { NativeDataSnapshot } from "@parentview/media-sdk/native";
-import { type NativeInvoke, TauriNativeDataTransport } from "../src/native-transport";
+import type { NativeMediaSnapshot } from "@parentview/media-sdk/native";
+import { type NativeInvoke, TauriNativeMediaTransport } from "../src/native-transport";
 
-const snapshot: NativeDataSnapshot = {
+const snapshot: NativeMediaSnapshot = {
   revision: 0,
   state: "idle",
   peerId: null,
   peers: [],
   readyPeers: [],
+  localSources: [],
+  remoteSources: [],
 };
 
 function deferred<T>() {
@@ -28,7 +30,7 @@ test("transport binds all native commands to its own host handle and destroys on
     if (command === "native_data_send") return { acceptedPeerIds: [], failures: [] } as T;
     return snapshot as T;
   };
-  const transport = new TauriNativeDataTransport({ invoke });
+  const transport = new TauriNativeMediaTransport({ invoke });
   await expect(transport.send("before open")).rejects.toThrow("not open");
   expect(calls).toHaveLength(0);
   await Promise.all([transport.open(), transport.open()]);
@@ -52,10 +54,10 @@ test("transport binds all native commands to its own host handle and destroys on
 });
 
 test("transport destruction closes a handle that arrives after opening was cancelled", async () => {
-  const opening = deferred<{ clientId: string; snapshot: NativeDataSnapshot }>();
+  const opening = deferred<{ clientId: string; snapshot: NativeMediaSnapshot }>();
   const destroyed: unknown[] = [];
   let openStarted = false;
-  const transport = new TauriNativeDataTransport({
+  const transport = new TauriNativeMediaTransport({
     invoke: async <T>(command: string, args?: Record<string, unknown>) => {
       if (command === "native_data_document") return "document-1" as T;
       if (command === "native_data_open") {
@@ -79,7 +81,7 @@ test("transport destruction closes a handle that arrives after opening was cance
 test("disposing while the document lease is pending never allocates a native client", async () => {
   const lease = deferred<string>();
   const calls: string[] = [];
-  const transport = new TauriNativeDataTransport({
+  const transport = new TauriNativeMediaTransport({
     invoke: async <T>(command: string) => {
       calls.push(command);
       if (command !== "native_data_document") throw new Error("No client should be allocated");
@@ -98,7 +100,7 @@ test("a queued open preserves its old document lease and propagates navigation r
   const gate = deferred<void>();
   let document = "document-1";
   let requested: unknown;
-  const transport = new TauriNativeDataTransport({
+  const transport = new TauriNativeMediaTransport({
     invoke: async <T>(command: string, args?: Record<string, unknown>) => {
       if (command === "native_data_document") return document as T;
       if (command === "native_data_open") {
@@ -121,7 +123,7 @@ test("a queued open preserves its old document lease and propagates navigation r
 
 test("an invalid document lease is rejected before native allocation", async () => {
   const calls: string[] = [];
-  const transport = new TauriNativeDataTransport({
+  const transport = new TauriNativeMediaTransport({
     invoke: async <T>(command: string) => {
       calls.push(command);
       return {} as T;

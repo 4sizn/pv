@@ -39,7 +39,7 @@ try {
 import { Subject } from "rxjs";
 import { MediaClient } from "@parentview/media-sdk";
 import { createBrowserMediaClient } from "@parentview/media-sdk/browser";
-import { NativeDataClient } from "@parentview/media-sdk/native";
+import { NativeMediaClient } from "@parentview/media-sdk/native";
 
 assert.equal(typeof globalThis.window, "undefined");
 assert.equal(typeof createBrowserMediaClient, "function");
@@ -72,23 +72,35 @@ assert.equal(completed, true);
 assert.deepEqual(states, ["idle", "joining", "joined", "leaving", "idle", "destroyed"]);
 
 let nativeCloses = 0;
-const nativeSnapshot = (revision, state, peerId = null, peers = [], readyPeers = []) =>
-  ({ revision, state, peerId, peers, readyPeers });
-const native = await NativeDataClient.create({ transport: {
+const nativeSnapshot = (revision, state, peerId = null, peers = [], readyPeers = [], localSources = [], remoteSources = []) =>
+  ({ revision, state, peerId, peers, readyPeers, localSources, remoteSources });
+const localSource = { id: "camera-local", kind: "camera" };
+const remoteSource = { peerId: "remote", id: "screen-remote", kind: "screen", mid: "1" };
+const native = await NativeMediaClient.create({ transport: {
   open: async () => nativeSnapshot(0, "idle"),
   readBatch: () => new Promise(() => {}),
-  join: async () => nativeSnapshot(1, "joined", "local", ["remote"], ["remote"]),
+  join: async () => nativeSnapshot(1, "joined", "local", ["remote"], ["remote"], [localSource], [remoteSource]),
   send: async () => ({ acceptedPeerIds: ["remote"], failures: [] }),
   leave: async () => nativeSnapshot(2, "idle"),
   destroy: async () => { nativeCloses++; return nativeSnapshot(3, "destroyed"); },
 } });
 const nativeStates = [];
+const localSources = [];
+const remoteSources = [];
 let nativeCompleted = false;
 native.state$.subscribe({ next: value => nativeStates.push(value), complete: () => { nativeCompleted = true; } });
-for (const stream of [native.state$, native.peers$, native.readyPeers$, native.messages$, native.errors$]) {
+native.localSources$.subscribe(value => localSources.push(value));
+native.remoteSources$.subscribe(value => remoteSources.push(value));
+for (const stream of [native.state$, native.peers$, native.readyPeers$, native.localSources$, native.remoteSources$, native.messages$, native.errors$]) {
   assert.equal(typeof stream.next, "undefined");
 }
 await native.join({ signalingUrl: "ws://localhost:8787/ws", roomId: "r", roomToken: "t", deviceToken: "d" });
+assert.deepEqual(localSources, [[], [localSource]]);
+assert.deepEqual(remoteSources, [[], [remoteSource]]);
+assert.equal(Object.isFrozen(localSources[1]), true);
+assert.equal(Object.isFrozen(localSources[1][0]), true);
+assert.equal(Object.isFrozen(remoteSources[1]), true);
+assert.equal(Object.isFrozen(remoteSources[1][0]), true);
 assert.deepEqual(await native.send("data"), { acceptedPeerIds: ["remote"], failures: [] });
 await native.leave();
 await native.destroy();
@@ -96,6 +108,8 @@ await native.destroy();
 assert.equal(nativeCloses, 1);
 assert.equal(nativeCompleted, true);
 assert.deepEqual(nativeStates, ["idle", "joined", "idle", "destroyed"]);
+assert.deepEqual(localSources, [[], [localSource], []]);
+assert.deepEqual(remoteSources, [[], [remoteSource], []]);
 `,
   );
   execute("node", ["consumer.mjs"]);
@@ -103,7 +117,7 @@ assert.deepEqual(nativeStates, ["idle", "joined", "idle", "destroyed"]);
     join(scratch, "consumer.mts"),
     `import { MediaClient, type MediaClientDependencies, type MediaState } from "@parentview/media-sdk";
 import type { Observable } from "rxjs";
-import { NativeDataClient, type NativeDataTransportPort, type NativeDataSendResult } from "@parentview/media-sdk/native";
+import { NativeMediaClient, type NativeMediaTransportPort, type NativeDataSendResult, type NativeLocalSource, type NativeRemoteSource } from "@parentview/media-sdk/native";
 declare const dependencies: MediaClientDependencies;
 const client = new MediaClient(dependencies);
 const states: Observable<MediaState> = client.state$;
@@ -117,15 +131,27 @@ void client.join({ roomId: "r", roomToken: "t", deviceToken: "d", role: "parent"
 // @ts-expect-error This consumer intentionally has no browser ambient types.
 const browserOnly: RTCPeerConnection = {};
 void browserOnly;
-declare const transport: NativeDataTransportPort;
-const native = await NativeDataClient.create({ transport });
+declare const transport: NativeMediaTransportPort;
+const native = await NativeMediaClient.create({ transport });
 const ready: Observable<readonly string[]> = native.readyPeers$;
 void ready;
+const localSources: Observable<readonly NativeLocalSource[]> = native.localSources$;
+const remoteSources: Observable<readonly NativeRemoteSource[]> = native.remoteSources$;
+void localSources;
+void remoteSources;
+declare const localSource: NativeLocalSource;
+declare const remoteSource: NativeRemoteSource;
+// @ts-expect-error Source descriptors must not let consumers rewrite native source identity.
+localSource.id = "changed";
+// @ts-expect-error Remote source binding is owned by the native runtime.
+remoteSource.mid = "changed";
 const receipt: NativeDataSendResult = await native.send("application data");
 void receipt;
 // @ts-expect-error Native snapshots remain readonly Observable projections.
 native.state$.next("joined");
-// @ts-expect-error The native data entry does not claim an unimplemented capture API.
+// @ts-expect-error Source streams are readonly Observable projections.
+native.localSources$.next([]);
+// @ts-expect-error The native media entry does not claim an unimplemented capture API.
 native.publish({});
 // @ts-expect-error Product roles are not native session admission options.
 void native.join({ signalingUrl: "ws://localhost/ws", roomId: "r", roomToken: "t", deviceToken: "d", role: "parent" });

@@ -6,6 +6,7 @@
       "!**/dist",
       "!**/target",
       "!**/gen",
+      "!vendor",
       "!**/test-results",
       "!**/playwright-report"
     ]

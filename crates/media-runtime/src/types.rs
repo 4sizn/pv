@@ -6,6 +6,62 @@ pub const EVENT_BATCH_LIMIT: usize = 32;
 pub const PUBLIC_EVENT_CAPACITY: usize = 64;
 pub const INPUT_CAPACITY: usize = 128;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SourceKind {
+    Camera,
+    Screen,
+    Microphone,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaSlot {
+    pub kind: SourceKind,
+    pub mid: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceDescriptor {
+    pub id: String,
+    pub kind: SourceKind,
+}
+
+/// One active publication mapped onto a negotiated native slot. Contains no frame/track handle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceBinding {
+    pub id: String,
+    pub kind: SourceKind,
+    pub mid: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteSourceDescriptor {
+    pub peer_id: String,
+    pub id: String,
+    pub kind: SourceKind,
+    pub mid: String,
+}
+
+/// Sampled native receive observations. A signature does not identify a publication frame boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaObservation {
+    pub kind: SourceKind,
+    pub mid: String,
+    pub frames_decoded: u64,
+    pub total_samples_received: u64,
+    pub bytes_received: u64,
+    pub observed_frames: u64,
+    pub content_signature: u64,
+    pub audio_energy: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerMediaStats {
+    pub peer_id: String,
+    pub media: Vec<MediaObservation>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum State {
@@ -24,6 +80,8 @@ pub struct Snapshot {
     pub peer_id: Option<String>,
     pub peers: Vec<String>,
     pub ready_peers: Vec<String>,
+    pub local_sources: Vec<SourceDescriptor>,
+    pub remote_sources: Vec<RemoteSourceDescriptor>,
 }
 impl Default for Snapshot {
     fn default() -> Self {
@@ -33,6 +91,8 @@ impl Default for Snapshot {
             peer_id: None,
             peers: vec![],
             ready_peers: vec![],
+            local_sources: vec![],
+            remote_sources: vec![],
         }
     }
 }
@@ -124,6 +184,8 @@ pub enum DescriptionType {
 pub struct Description {
     pub r#type: DescriptionType,
     pub sdp: String,
+    #[serde(default)]
+    pub slots: Vec<MediaSlot>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -141,7 +203,11 @@ pub enum SignalPayload {
     Ice {
         candidate: Candidate,
     },
-    // Existing browser peers can advertise media. This data runtime ignores metadata.
+    Sources {
+        revision: u64,
+        sources: Vec<SourceBinding>,
+    },
+    // The browser laboratory's individual track metadata is not a native source manifest.
     Track {
         id: String,
         kind: String,

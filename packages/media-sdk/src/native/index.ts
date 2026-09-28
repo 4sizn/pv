@@ -1,13 +1,15 @@
-export { NativeDataClient } from "./client.js";
+export { NativeMediaClient } from "./client.js";
 export type {
-  NativeDataBatch,
-  NativeDataClientStreams,
-  NativeDataError,
-  NativeDataEvent,
-  NativeDataJoinOptions,
   NativeDataMessage,
   NativeDataSendResult,
-  NativeDataSnapshot,
-  NativeDataState,
-  NativeDataTransportPort,
+  NativeLocalSource,
+  NativeMediaBatch,
+  NativeMediaClientStreams,
+  NativeMediaError,
+  NativeMediaEvent,
+  NativeMediaJoinOptions,
+  NativeMediaSnapshot,
+  NativeMediaState,
+  NativeMediaTransportPort,
+  NativeRemoteSource,
 } from "./types.js";

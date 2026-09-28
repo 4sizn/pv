@@ -27,7 +27,7 @@ fn native_sdk_dependencies_follow_layer_responsibilities() {
         ("pv-media-runtime", &["tokio", "serde", "serde_json"][..]),
         (
             "pv-media-libwebrtc",
-            &["pv-media-runtime", "libwebrtc", "tokio"][..],
+            &["pv-media-runtime", "libwebrtc", "tokio", "tokio-stream"][..],
         ),
         (
             "pv-media-native",

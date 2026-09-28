@@ -1,6 +1,6 @@
 //! Actual native DTLS/SCTP integration over the authenticated signaling service.
 use parentview_signaling::{config::Config, AppState};
-use pv_media_native::{create_client, Event, JoinOptions, NativeDataClient, State};
+use pv_media_native::{create_client, Event, JoinOptions, NativeMediaClient, State};
 use std::{
     collections::BTreeSet,
     time::{Duration, Instant},
@@ -50,7 +50,7 @@ impl Drop for Server {
     }
 }
 
-async fn ready(client: &NativeDataClient, count: usize) {
+async fn ready(client: &NativeMediaClient, count: usize) {
     timeout(Duration::from_secs(15), async {
         loop {
             let snapshot = client.snapshot();
@@ -68,7 +68,7 @@ async fn ready(client: &NativeDataClient, count: usize) {
     .await
     .unwrap_or_else(|_| panic!("native readiness deadline: {:?}", client.snapshot()));
 }
-async fn message_set(client: &NativeDataClient, count: usize) -> BTreeSet<String> {
+async fn message_set(client: &NativeMediaClient, count: usize) -> BTreeSet<String> {
     timeout(Duration::from_secs(10), async {
         let mut messages = BTreeSet::new();
         while messages.len() < count {

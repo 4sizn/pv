@@ -38,7 +38,7 @@ enum ServerMessage {
     },
     Signal {
         from: String,
-        payload: SignalPayload,
+        payload: serde_json::Value,
     },
     Pong,
     Error {
@@ -174,7 +174,7 @@ async fn drive(
                         Some(Ok(Message::Text(text))) => { match parse(&text)? {
                             ServerMessage::PeerJoined { peer_id } => { if !events.send(Input::Signaling(SignalingEvent::PeerJoined(peer_id))) { break; } }
                             ServerMessage::PeerLeft { peer_id } => { if !events.send(Input::Signaling(SignalingEvent::PeerLeft(peer_id))) { break; } }
-                            ServerMessage::Signal { from, payload } => { if !events.send(Input::Signaling(SignalingEvent::Signal { from, payload })) { break; } }
+                            ServerMessage::Signal { from, payload } => { if !events.send(Input::Signaling(peer_signal(from, payload))) { break; } }
                             ServerMessage::Pong => last_pong = Instant::now(),
                             ServerMessage::Error { code } => { if !events.send(Input::Signaling(SignalingEvent::Error(server_error(&code)))) { break; } }
                             ServerMessage::Joined { .. } => return Err(signaling_error("Duplicate signaling admission")),
@@ -222,6 +222,14 @@ fn parse(text: &str) -> Result<ServerMessage, NativeError> {
     }
     serde_json::from_str(text).map_err(|_| signaling_error("Invalid signaling message"))
 }
+// The server authenticates the envelope, but payload content belongs to one peer.
+// Malformed peer content must not terminate unrelated mesh connections.
+fn peer_signal(from: String, payload: serde_json::Value) -> SignalingEvent {
+    match serde_json::from_value(payload) {
+        Ok(payload) => SignalingEvent::Signal { from, payload },
+        Err(_) => SignalingEvent::InvalidSignal { from },
+    }
+}
 fn server_error(code: &str) -> NativeError {
     let code = match code {
         "unauthorized" | "room-unavailable" | "room-full" | "already-joined"
@@ -249,8 +257,31 @@ mod tests {
     };
 
     #[test]
+    fn malformed_source_payload_does_not_invalidate_authenticated_envelope() {
+        let message = parse(
+            r#"{"type":"signal","from":"peer-a","payload":{"type":"sources","revision":1,"sources":[{"id":"camera","kind":"unknown","mid":"0"}]}}"#,
+        );
+        let Ok(ServerMessage::Signal { from, payload }) = message else {
+            panic!("Valid authenticated envelope must survive malformed peer content");
+        };
+        assert!(
+            matches!(peer_signal(from, payload), SignalingEvent::InvalidSignal { from } if from == "peer-a")
+        );
+        assert!(
+            matches!(peer_signal("peer-b".into(), json!({"type":"sources","revision":1,"sources":[]})), SignalingEvent::Signal { from, payload: SignalPayload::Sources { revision: 1, sources } } if from == "peer-b" && sources.is_empty())
+        );
+    }
+
+    #[test]
     fn malformed_wire_and_untrusted_server_errors_stay_safe() {
-        assert!(parse(r#"{"type":"signal","from":"a","payload":{"type":"ice","candidate":{"candidate":true}}}"#).is_err());
+        let Ok(ServerMessage::Signal { from, payload }) = parse(
+            r#"{"type":"signal","from":"a","payload":{"type":"ice","candidate":{"candidate":true}}}"#,
+        ) else {
+            panic!("Expected authenticated signal envelope");
+        };
+        assert!(
+            matches!(peer_signal(from, payload), SignalingEvent::InvalidSignal { from } if from == "a")
+        );
         assert!(parse(r#"{"type":"unknown"}"#).is_err());
         assert!(parse(&" ".repeat(MAX_WIRE_BYTES + 1)).is_err());
         let error = server_error("secret-from-untrusted-server");

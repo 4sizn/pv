@@ -1,4 +1,6 @@
 //! Raw libwebrtc adapter. Owns native handles and callback conversion only.
+mod media;
+mod source;
 use libwebrtc::{
     data_channel::{DataChannel, DataChannelInit, DataChannelState},
     ice_candidate::IceCandidate,
@@ -9,8 +11,10 @@ use libwebrtc::{
     session_description::{SdpType, SessionDescription},
 };
 use pv_media_runtime::{
-    ports::*, Candidate, Description, DescriptionType, IceServer, NativeError, MAX_DATA_BYTES,
+    ports::*, Candidate, Description, DescriptionType, IceServer, MediaObservation, MediaSlot,
+    NativeError, SourceKind, MAX_DATA_BYTES,
 };
+pub use source::{AudioInput, I420Buffer, LibWebRtcSource, VideoFrame, VideoInput, VideoRotation};
 use std::sync::{Arc, Mutex};
 
 const MAX_BUFFERED_BYTES: u64 = 1_048_576;
@@ -84,8 +88,11 @@ impl EngineFactory for LibWebRtcFactory {
             connection,
             channel,
             closed: false,
+            media: media::Media::new(),
+            factory: self.factory.clone(),
         };
         if initiator {
+            peer.media.reserve(&peer.connection, &self.factory)?;
             match peer
                 .connection
                 .create_data_channel("pv-data", DataChannelInit::default())
@@ -147,13 +154,19 @@ struct LibWebRtcPeer {
     connection: PeerConnection,
     channel: Arc<Mutex<Option<DataChannel>>>,
     closed: bool,
+    media: media::Media,
+    factory: PeerConnectionFactory,
 }
 impl PeerPort for LibWebRtcPeer {
     fn offer(&mut self) -> PortFuture<'_, Description> {
         Box::pin(async move {
             let description = self
                 .connection
-                .create_offer(OfferOptions::default())
+                .create_offer(OfferOptions {
+                    offer_to_receive_audio: true,
+                    offer_to_receive_video: true,
+                    ..OfferOptions::default()
+                })
                 .await
                 .map_err(|_| engine_error("Offer creation failed"))?;
             self.connection
@@ -163,17 +176,22 @@ impl PeerPort for LibWebRtcPeer {
             Ok(Description {
                 r#type: DescriptionType::Offer,
                 sdp: description.to_string(),
+                slots: self.media.descriptors(),
             })
         })
     }
     fn answer(&mut self, offer: Description) -> PortFuture<'_, Description> {
         Box::pin(async move {
+            let offered_slots = offer.slots;
+            media::validate_slots(&offered_slots)?;
             let offer = SessionDescription::parse(&offer.sdp, SdpType::Offer)
                 .map_err(|_| engine_error("Invalid remote offer"))?;
             self.connection
                 .set_remote_description(offer)
                 .await
                 .map_err(|_| engine_error("Remote description failed"))?;
+            self.media
+                .adopt(&self.connection, &self.factory, &offered_slots)?;
             let answer = self
                 .connection
                 .create_answer(AnswerOptions::default())
@@ -183,20 +201,28 @@ impl PeerPort for LibWebRtcPeer {
                 .set_local_description(answer.clone())
                 .await
                 .map_err(|_| engine_error("Local description failed"))?;
+            self.media.observe()?;
             Ok(Description {
                 r#type: DescriptionType::Answer,
                 sdp: answer.to_string(),
+                slots: self.media.descriptors(),
             })
         })
     }
     fn accept_answer(&mut self, answer: Description) -> PortFuture<'_, ()> {
         Box::pin(async move {
+            let answered_slots = answer.slots;
+            media::validate_slots(&answered_slots)?;
+            if self.media.descriptors() != answered_slots {
+                return Err(engine_error("Remote media slots differ from the offer"));
+            }
             let answer = SessionDescription::parse(&answer.sdp, SdpType::Answer)
                 .map_err(|_| engine_error("Invalid remote answer"))?;
             self.connection
                 .set_remote_description(answer)
                 .await
-                .map_err(|_| engine_error("Remote description failed"))
+                .map_err(|_| engine_error("Remote description failed"))?;
+            self.media.accept(&answered_slots)
         })
     }
     fn add_candidate(&mut self, candidate: Candidate) -> PortFuture<'_, ()> {
@@ -236,6 +262,22 @@ impl PeerPort for LibWebRtcPeer {
             .send(data.as_bytes(), false)
             .map_err(|_| engine_error("Native engine did not accept the data"))
     }
+    fn slots(&self) -> Vec<MediaSlot> {
+        self.media.descriptors()
+    }
+    fn set_source(
+        &mut self,
+        kind: SourceKind,
+        source: Option<&dyn SourcePort>,
+    ) -> Result<(), NativeError> {
+        if self.closed {
+            return Err(engine_error("Native peer is closed"));
+        }
+        self.media.set_source(kind, source)
+    }
+    fn media_stats(&mut self) -> PortFuture<'_, Vec<MediaObservation>> {
+        Box::pin(self.media.stats(&self.connection))
+    }
     fn close(&mut self) {
         if self.closed {
             return;
@@ -250,6 +292,7 @@ impl PeerPort for LibWebRtcPeer {
             channel.on_buffered_amount_change(None);
             channel.close();
         }
+        self.media.close();
         self.connection.close();
     }
 }

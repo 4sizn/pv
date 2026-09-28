@@ -1,6 +1,9 @@
 //! IO contracts. Callbacks enqueue owned values; they do not own session policy.
-use crate::{Candidate, Description, IceServer, JoinOptions, NativeError, SignalPayload};
-use std::{future::Future, pin::Pin};
+use crate::{
+    Candidate, Description, IceServer, JoinOptions, MediaObservation, MediaSlot, NativeError,
+    SignalPayload, SourceKind,
+};
+use std::{any::Any, future::Future, pin::Pin};
 use tokio::sync::{mpsc, watch};
 
 pub type PortFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, NativeError>> + Send + 'a>>;
@@ -11,6 +14,9 @@ pub enum SignalingEvent {
     Signal {
         from: String,
         payload: SignalPayload,
+    },
+    InvalidSignal {
+        from: String,
     },
     Closed,
     Error(NativeError),
@@ -105,6 +111,24 @@ pub trait PeerPort: Send {
     fn accept_answer(&mut self, answer: Description) -> PortFuture<'_, ()>;
     fn add_candidate(&mut self, candidate: Candidate) -> PortFuture<'_, ()>;
     fn send(&mut self, data: &str) -> Result<(), NativeError>;
+    /// Actual negotiated slots, available after remote description application.
+    fn slots(&self) -> Vec<MediaSlot>;
+    /// Bind/detach one source without renegotiation. The runtime retains source ownership.
+    fn set_source(
+        &mut self,
+        kind: SourceKind,
+        source: Option<&dyn SourcePort>,
+    ) -> Result<(), NativeError>;
+    /// Scalar native observations only; raw media stays in the engine's bounded sinks.
+    fn media_stats(&mut self) -> PortFuture<'_, Vec<MediaObservation>>;
     /// Called by the owner outside native callbacks. Must be idempotent.
     fn close(&mut self);
+}
+
+/// One producer/source handle, transferred to the runtime by publish even on failure.
+/// close joins owned producer tasks; Drop must cancel them if an operation is abandoned.
+pub trait SourcePort: Send + Sync {
+    fn kind(&self) -> SourceKind;
+    fn as_any(&self) -> &dyn Any;
+    fn close(&mut self) -> PortFuture<'_, ()>;
 }

@@ -1,10 +1,10 @@
 import {
-  type NativeDataBatch,
-  NativeDataClient,
-  type NativeDataJoinOptions,
   type NativeDataSendResult,
-  type NativeDataSnapshot,
-  type NativeDataTransportPort,
+  type NativeMediaBatch,
+  NativeMediaClient,
+  type NativeMediaJoinOptions,
+  type NativeMediaSnapshot,
+  type NativeMediaTransportPort,
 } from "@parentview/media-sdk/native";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -12,28 +12,28 @@ export type NativeInvoke = <T>(command: string, args?: Record<string, unknown>) 
 
 interface OpenedClient {
   readonly clientId: string;
-  readonly snapshot: NativeDataSnapshot;
+  readonly snapshot: NativeMediaSnapshot;
 }
 
 /** One document-owned IPC handle. Rust owns all session/peer state; the SDK owns the read pump. */
-export class TauriNativeDataTransport implements NativeDataTransportPort {
+export class TauriNativeMediaTransport implements NativeMediaTransportPort {
   readonly #invoke: NativeInvoke;
   #clientId: string | undefined;
-  #opening: Promise<NativeDataSnapshot> | undefined;
-  #closing: Promise<NativeDataSnapshot> | undefined;
+  #opening: Promise<NativeMediaSnapshot> | undefined;
+  #closing: Promise<NativeMediaSnapshot> | undefined;
   #disposed = false;
 
   constructor(options: { invoke?: NativeInvoke } = {}) {
     this.#invoke = options.invoke ?? invoke;
   }
 
-  async open(): Promise<NativeDataSnapshot> {
+  async open(): Promise<NativeMediaSnapshot> {
     if (this.#disposed) throw new Error("Native transport is closed");
     this.#opening ??= this.#open();
     return this.#opening;
   }
 
-  async #open(): Promise<NativeDataSnapshot> {
+  async #open(): Promise<NativeMediaSnapshot> {
     // A queued open from an old document must not allocate a client after navigation.
     // Fetching the lease allocates no native resources.
     const documentId = await this.#invoke<unknown>("native_data_document");
@@ -51,11 +51,11 @@ export class TauriNativeDataTransport implements NativeDataTransportPort {
     return result.snapshot;
   }
 
-  async readBatch(): Promise<NativeDataBatch> {
+  async readBatch(): Promise<NativeMediaBatch> {
     return this.#invoke("native_data_read", { clientId: this.#handle() });
   }
 
-  async join(options: NativeDataJoinOptions): Promise<NativeDataSnapshot> {
+  async join(options: NativeMediaJoinOptions): Promise<NativeMediaSnapshot> {
     return this.#invoke("native_data_join", { clientId: this.#handle(), options });
   }
 
@@ -63,18 +63,18 @@ export class TauriNativeDataTransport implements NativeDataTransportPort {
     return this.#invoke("native_data_send", { clientId: this.#handle(), data });
   }
 
-  async leave(): Promise<NativeDataSnapshot> {
+  async leave(): Promise<NativeMediaSnapshot> {
     return this.#invoke("native_data_leave", { clientId: this.#handle() });
   }
 
-  destroy(): Promise<NativeDataSnapshot> {
+  destroy(): Promise<NativeMediaSnapshot> {
     if (this.#closing) return this.#closing;
     this.#disposed = true;
     this.#closing = this.#dispose();
     return this.#closing;
   }
 
-  async #dispose(): Promise<NativeDataSnapshot> {
+  async #dispose(): Promise<NativeMediaSnapshot> {
     try {
       await this.#opening;
     } catch {
@@ -96,6 +96,6 @@ export class TauriNativeDataTransport implements NativeDataTransportPort {
 }
 
 /** App composition: the reusable SDK never imports Tauri. */
-export function createTauriNativeDataClient(): Promise<NativeDataClient> {
-  return NativeDataClient.create({ transport: new TauriNativeDataTransport() });
+export function createTauriNativeMediaClient(): Promise<NativeMediaClient> {
+  return NativeMediaClient.create({ transport: new TauriNativeMediaTransport() });
 }

@@ -19,3 +19,4 @@ url = "2"
 parentview-signaling = { path = "../../services/signaling" }
 axum = "0.8"
 tower = { version = "0.5", features = ["util"] }
+libwebrtc = "=0.3.50"

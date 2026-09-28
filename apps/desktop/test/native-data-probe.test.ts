@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import type {
-  NativeDataError,
-  NativeDataJoinOptions,
   NativeDataMessage,
   NativeDataSendResult,
+  NativeMediaError,
+  NativeMediaJoinOptions,
 } from "@parentview/media-sdk/native";
 import { BehaviorSubject, Subject } from "rxjs";
 import type { RoomInvitation } from "../src/invitation";
@@ -81,11 +81,11 @@ class FakeApi implements NativeProbeApi {
 class FakeClient implements NativeProbeClient {
   readonly ready = new BehaviorSubject<readonly string[]>([]);
   readonly messages = new Subject<NativeDataMessage>();
-  readonly errors = new Subject<NativeDataError>();
+  readonly errors = new Subject<NativeMediaError>();
   readonly readyPeers$ = this.ready.asObservable();
   readonly messages$ = this.messages.asObservable();
   readonly errors$ = this.errors.asObservable();
-  joins: NativeDataJoinOptions[] = [];
+  joins: NativeMediaJoinOptions[] = [];
   sent: string[] = [];
   leaves = 0;
   destroys = 0;
@@ -96,7 +96,7 @@ class FakeClient implements NativeProbeClient {
   });
   onLeave: () => Promise<void> = async () => {};
   onDestroy: () => Promise<void> = async () => {};
-  async join(options: NativeDataJoinOptions): Promise<void> {
+  async join(options: NativeMediaJoinOptions): Promise<void> {
     this.joins.push(options);
     await this.onJoin();
   }

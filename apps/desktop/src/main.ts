@@ -10,7 +10,7 @@ import { LabController } from "./lab-controller";
 import { LabView } from "./lab-view";
 import { LaboratoryApi } from "./laboratory-api";
 import { NativeDataProbe } from "./native-data-probe";
-import { createTauriNativeDataClient } from "./native-transport";
+import { createTauriNativeMediaClient } from "./native-transport";
 import "./styles.css";
 
 interface NativeCapabilities {
@@ -53,7 +53,7 @@ if (isTauri()) {
       view.setRuntime(capabilities.platform);
       if (capabilities.nativeDataChannels) {
         nativeProbe = new NativeDataProbe(view, {
-          createClient: createTauriNativeDataClient,
+          createClient: createTauriNativeMediaClient,
           createApi: () => new LaboratoryApi(),
         });
         view.enableNativeProbe();

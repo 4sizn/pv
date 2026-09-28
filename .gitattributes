@@ -1,2 +1,4 @@
 # Preserve upstream license notices byte-for-byte, including their whitespace.
 crates/media-libwebrtc/licenses/*.md -whitespace
+# Preserve the imported upstream sources/patch files verbatim. PV edits are listed in PV_PATCHES.md.
+vendor/** -whitespace

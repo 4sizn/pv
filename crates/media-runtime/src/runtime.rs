@@ -19,6 +19,13 @@ struct ControlAck {
 enum Command {
     Join(JoinOptions, oneshot::Sender<Result<Snapshot, NativeError>>),
     Send(String, oneshot::Sender<Result<SendResult, NativeError>>),
+    Publish(
+        String,
+        Box<dyn SourcePort>,
+        oneshot::Sender<Result<Snapshot, NativeError>>,
+    ),
+    Unpublish(String, oneshot::Sender<Result<Snapshot, NativeError>>),
+    MediaStats(oneshot::Sender<Result<Vec<PeerMediaStats>, NativeError>>),
 }
 struct QueuedCommand {
     sequence: u64,
@@ -47,10 +54,10 @@ impl Drop for Handle {
 }
 /// A cloneable command handle. Only the actor owns native session state.
 #[derive(Clone)]
-pub struct NativeDataClient {
+pub struct NativeMediaClient {
     handle: Arc<Handle>,
 }
-impl NativeDataClient {
+impl NativeMediaClient {
     pub fn new(
         engine: Arc<dyn EngineFactory>,
         signaling: Arc<dyn SignalingFactory>,
@@ -78,6 +85,7 @@ impl NativeDataClient {
             control: control_rx,
             acknowledged,
             processed_control: 0,
+            pending_cleanup_error: None,
             inputs,
             input_rx,
             overflow,
@@ -86,6 +94,8 @@ impl NativeDataClient {
             next_peer_instance: 0,
             signaling: None,
             peers: BTreeMap::new(),
+            publications: BTreeMap::new(),
+            source_revision: 0,
             ice: vec![],
         };
         runtime.spawn(actor.run());
@@ -118,10 +128,40 @@ impl NativeDataClient {
         self.enqueue(Command::Send(data, tx))?;
         rx.await.unwrap_or_else(|_| Err(NativeError::destroyed()))
     }
+    /// Transfers source ownership even when admission fails. Successful publication means
+    /// local ownership; negotiated/current and later peers receive that source independently.
+    /// Dropping the response future does not cancel an admitted command. Admission-rejected
+    /// cleanup belongs to this future, outside actor stop acknowledgement; Drop still cancels.
+    pub async fn publish(
+        &self,
+        id: String,
+        source: Box<dyn SourcePort>,
+    ) -> Result<Snapshot, NativeError> {
+        let (tx, rx) = oneshot::channel();
+        if let Err(rejected) = self.enqueue_owned(Command::Publish(id, source, tx)) {
+            let (command, error) = *rejected;
+            reject(command, error).await;
+        }
+        rx.await.unwrap_or_else(|_| Err(NativeError::destroyed()))
+    }
+    pub async fn unpublish(&self, id: String) -> Result<Snapshot, NativeError> {
+        let (tx, rx) = oneshot::channel();
+        self.enqueue(Command::Unpublish(id, tx))?;
+        rx.await.unwrap_or_else(|_| Err(NativeError::destroyed()))
+    }
+    /// Scalar receive diagnostics; raw frames remain in the native engine.
+    pub async fn media_stats(&self) -> Result<Vec<PeerMediaStats>, NativeError> {
+        let (tx, rx) = oneshot::channel();
+        self.enqueue(Command::MediaStats(tx))?;
+        rx.await.unwrap_or_else(|_| Err(NativeError::destroyed()))
+    }
     fn enqueue(&self, command: Command) -> Result<(), NativeError> {
+        self.enqueue_owned(command).map_err(|rejected| rejected.1)
+    }
+    fn enqueue_owned(&self, command: Command) -> Result<(), Box<(Command, NativeError)>> {
         let control = *self.handle.control.borrow();
         if control.destroyed || self.snapshot().state == State::Destroyed {
-            return Err(NativeError::destroyed());
+            return Err(Box::new((command, NativeError::destroyed())));
         }
         self.handle
             .commands
@@ -129,11 +169,16 @@ impl NativeDataClient {
                 sequence: control.sequence,
                 command,
             })
-            .map_err(|error| match error {
-                mpsc::error::TrySendError::Full(_) => {
-                    NativeError::new("busy", "The command queue is full")
-                }
-                mpsc::error::TrySendError::Closed(_) => NativeError::destroyed(),
+            .map_err(|error| {
+                Box::new(match error {
+                    mpsc::error::TrySendError::Full(queued) => (
+                        queued.command,
+                        NativeError::new("busy", "The command queue is full"),
+                    ),
+                    mpsc::error::TrySendError::Closed(queued) => {
+                        (queued.command, NativeError::destroyed())
+                    }
+                })
             })
     }
     pub async fn leave(&self) -> Result<Snapshot, NativeError> {
@@ -211,6 +256,7 @@ struct Peer {
     remote_description: bool,
     early_ice: Vec<Candidate>,
     ready: bool,
+    source_manifest: Option<(u64, Vec<SourceBinding>)>,
 }
 struct Actor {
     engine: Option<Arc<dyn EngineFactory>>,
@@ -220,6 +266,7 @@ struct Actor {
     control: watch::Receiver<Control>,
     acknowledged: watch::Sender<ControlAck>,
     processed_control: u64,
+    pending_cleanup_error: Option<NativeError>,
     inputs: mpsc::Sender<StampedInput>,
     input_rx: mpsc::Receiver<StampedInput>,
     overflow: watch::Sender<u64>,
@@ -228,6 +275,8 @@ struct Actor {
     next_peer_instance: u64,
     signaling: Option<Box<dyn SignalingPort>>,
     peers: BTreeMap<String, Peer>,
+    publications: BTreeMap<String, Box<dyn SourcePort>>,
+    source_revision: u64,
     ice: Vec<IceServer>,
 }
 impl Actor {
@@ -236,6 +285,9 @@ impl Actor {
             let requested = *self.control.borrow_and_update();
             if requested.sequence != self.processed_control {
                 let result = self.teardown(requested.destroyed).await;
+                if self.control.borrow().sequence != requested.sequence {
+                    self.pending_cleanup_error = result.as_ref().err().cloned();
+                }
                 self.processed_control = requested.sequence;
                 self.acknowledged.send_replace(ControlAck {
                     sequence: requested.sequence,
@@ -250,7 +302,7 @@ impl Actor {
                     "event-overflow",
                     "Native event queue overflowed; session closed",
                 ));
-                let _ = self.teardown(false).await;
+                self.end_session().await;
             }
             tokio::select! {
                 biased;
@@ -258,10 +310,19 @@ impl Actor {
                 _ = self.overflow_rx.changed() => {}
                 command = self.commands.recv() => {
                     let Some(command) = command else { let _ = self.teardown(true).await; break; };
-                    if command.sequence != self.processed_control { reject(command.command, NativeError::cancelled()); continue; }
+                    if command.sequence != self.processed_control {
+                        if let Some(error) = reject(command.command, NativeError::cancelled()).await {
+                            self.remember_pending_cleanup(&error);
+                            self.emit_error(error);
+                        }
+                        continue;
+                    }
                     match command.command {
                         Command::Join(options, reply) => { let result = self.join(options).await; let _ = reply.send(result); }
                         Command::Send(data, reply) => { let _ = reply.send(self.send(data)); }
+                        Command::Publish(id, source, reply) => { let result = self.publish(id, source).await; let _ = reply.send(result); }
+                        Command::Unpublish(id, reply) => { let result = self.unpublish(&id).await; let _ = reply.send(result); }
+                        Command::MediaStats(reply) => { let result = self.media_stats().await; let _ = reply.send(result); }
                     }
                 }
                 input = self.input_rx.recv() => {
@@ -277,7 +338,7 @@ impl Actor {
         }
         self.commands.close();
         while let Some(command) = self.commands.recv().await {
-            reject(command.command, NativeError::destroyed());
+            reject(command.command, NativeError::destroyed()).await;
         }
     }
     fn sink(&self) -> EventSink {
@@ -293,10 +354,35 @@ impl Actor {
             .map(|(id, _)| id.clone())
             .collect();
         let previous = self.shared.snapshot.borrow().clone();
+        let local_sources = self
+            .publications
+            .iter()
+            .map(|(id, source)| SourceDescriptor {
+                id: id.clone(),
+                kind: source.kind(),
+            })
+            .collect();
+        let remote_sources = self
+            .peers
+            .iter()
+            .filter(|(_, peer)| peer.remote_description)
+            .flat_map(|(peer_id, peer)| {
+                peer.source_manifest.iter().flat_map(move |(_, sources)| {
+                    sources.iter().map(move |source| RemoteSourceDescriptor {
+                        peer_id: peer_id.clone(),
+                        id: source.id.clone(),
+                        kind: source.kind,
+                        mid: source.mid.clone(),
+                    })
+                })
+            })
+            .collect();
         if previous.state == state
             && previous.peer_id == peer_id
             && previous.peers == peers
             && previous.ready_peers == ready_peers
+            && previous.local_sources == local_sources
+            && previous.remote_sources == remote_sources
         {
             return;
         }
@@ -306,6 +392,8 @@ impl Actor {
             peer_id,
             peers,
             ready_peers,
+            local_sources,
+            remote_sources,
         });
         self.shared.notify.notify_waiters();
     }
@@ -358,13 +446,13 @@ impl Actor {
         let connected = match result {
             Ok(value) => value,
             Err(error) => {
-                let _ = self.teardown(false).await;
+                self.end_session().await;
                 return Err(error);
             }
         };
         self.signaling = Some(connected.signaling);
         if !valid_membership(&connected.peer_id, &connected.peers) {
-            let _ = self.teardown(false).await;
+            self.end_session().await;
             return Err(NativeError::new(
                 "invalid-membership",
                 "Signaling returned invalid membership",
@@ -420,6 +508,7 @@ impl Actor {
                 remote_description: false,
                 early_ice: vec![],
                 ready: false,
+                source_manifest: None,
             },
         );
         self.update_peers();
@@ -454,6 +543,15 @@ impl Actor {
                 }
             }
             Input::Signaling(SignalingEvent::PeerLeft(peer_id)) => self.remove_peer(&peer_id),
+            Input::Signaling(SignalingEvent::InvalidSignal { from }) => {
+                if self.peers.contains_key(&from) {
+                    self.remove_peer(&from);
+                    self.emit_error(NativeError::new(
+                        "invalid-signal",
+                        "Peer sent an invalid media signal",
+                    ));
+                }
+            }
             Input::Signaling(SignalingEvent::Signal { from, payload }) => {
                 if !self.peers.contains_key(&from) {
                     return;
@@ -467,13 +565,13 @@ impl Actor {
             }
             Input::Signaling(SignalingEvent::Closed) => {
                 self.emit_error(NativeError::new("disconnected", "Signaling disconnected"));
-                let _ = self.teardown(false).await;
+                self.end_session().await;
             }
             Input::Signaling(SignalingEvent::Error(error)) => {
                 let peer_departed = error.code == "peer-unavailable";
                 self.emit_error(error);
                 if !peer_departed {
-                    let _ = self.teardown(false).await;
+                    self.end_session().await;
                 }
             }
             Input::Engine { peer_id, event } => {
@@ -489,7 +587,7 @@ impl Actor {
                         if let Err(error) = self.signal(&peer_id, SignalPayload::Ice { candidate })
                         {
                             self.emit_error(error);
-                            let _ = self.teardown(false).await;
+                            self.end_session().await;
                         }
                     }
                     EngineEvent::Message(data) => {
@@ -500,7 +598,7 @@ impl Actor {
                                 "Received data exceeds the byte limit",
                             ));
                         } else if !self.emit(Event::Message { peer_id, data }) {
-                            let _ = self.teardown(false).await;
+                            self.end_session().await;
                         }
                     }
                     EngineEvent::Failed => {
@@ -575,6 +673,10 @@ impl Actor {
                 if let Some(description) = answer {
                     self.signal(peer_id, SignalPayload::Description { description })?;
                 }
+                self.attach_publications(peer_id)?;
+                self.validate_peer_manifest(peer_id)?;
+                self.send_manifest(peer_id)?;
+                self.update_peers();
             }
             SignalPayload::Ice { candidate } => {
                 if candidate.candidate.is_empty() {
@@ -609,6 +711,34 @@ impl Actor {
                     ));
                 }
             }
+            SignalPayload::Sources {
+                revision,
+                mut sources,
+            } => {
+                if peer
+                    .source_manifest
+                    .as_ref()
+                    .is_some_and(|(current, _)| revision < *current)
+                {
+                    return Ok(());
+                }
+                validate_manifest(&sources)?;
+                sources.sort_by_key(|source| source.kind);
+                if let Some((current, previous)) = &peer.source_manifest {
+                    if revision == *current {
+                        if previous != &sources {
+                            return Err(NativeError::new(
+                                "invalid-sources",
+                                "Source manifest changed without a revision",
+                            ));
+                        }
+                        return Ok(());
+                    }
+                }
+                peer.source_manifest = Some((revision, sources));
+                self.validate_peer_manifest(peer_id)?;
+                self.update_peers();
+            }
             SignalPayload::Track { .. } | SignalPayload::TrackRemoved { .. } => {}
         }
         Ok(())
@@ -632,13 +762,205 @@ impl Actor {
         }
         Ok(result)
     }
+    async fn publish(
+        &mut self,
+        id: String,
+        source: Box<dyn SourcePort>,
+    ) -> Result<Snapshot, NativeError> {
+        let error = if self.shared.snapshot.borrow().state != State::Joined {
+            Some(NativeError::new(
+                "invalid-state",
+                "Join a session before publishing",
+            ))
+        } else if !valid_peer_id(&id) {
+            Some(NativeError::new(
+                "invalid-source",
+                "Source identifier is empty or exceeds limits",
+            ))
+        } else if self.publications.contains_key(&id)
+            || self
+                .publications
+                .values()
+                .any(|active| active.kind() == source.kind())
+        {
+            Some(NativeError::new(
+                "duplicate-source",
+                "Source identifier and kind must each be unique",
+            ))
+        } else {
+            None
+        };
+        if let Some(error) = error {
+            return Err(match close_source(source).await {
+                Ok(()) => error,
+                Err(cleanup_error) => {
+                    self.remember_pending_cleanup(&cleanup_error);
+                    cleanup_error
+                }
+            });
+        }
+        self.publications.insert(id.clone(), source);
+        self.source_revision += 1;
+        let peers: Vec<_> = self.peers.keys().cloned().collect();
+        for peer_id in peers {
+            let peer = self.peers.get_mut(&peer_id).expect("known peer");
+            if !peer.remote_description {
+                continue;
+            }
+            let source = self.publications.get(&id).expect("owned source");
+            if let Err(error) = peer.port.set_source(source.kind(), Some(source.as_ref())) {
+                // Even an adapter that fails after attaching must not keep hidden transmission.
+                self.remove_peer(&peer_id);
+                self.emit_error(error);
+                continue;
+            }
+            if let Err(error) = self.send_manifest(&peer_id) {
+                self.remove_peer(&peer_id);
+                self.emit_error(error);
+            }
+        }
+        self.update_peers();
+        Ok(self.shared.snapshot.borrow().clone())
+    }
+    async fn unpublish(&mut self, id: &str) -> Result<Snapshot, NativeError> {
+        let Some(source) = self.publications.remove(id) else {
+            return Ok(self.shared.snapshot.borrow().clone());
+        };
+        self.source_revision += 1;
+        let peers: Vec<_> = self.peers.keys().cloned().collect();
+        for peer_id in peers {
+            let peer = self.peers.get_mut(&peer_id).expect("known peer");
+            if !peer.remote_description {
+                continue;
+            }
+            if let Err(error) = peer.port.set_source(source.kind(), None) {
+                self.remove_peer(&peer_id);
+                self.emit_error(error);
+                continue;
+            }
+            if let Err(error) = self.send_manifest(&peer_id) {
+                self.remove_peer(&peer_id);
+                self.emit_error(error);
+            }
+        }
+        let result = close_source(source).await;
+        self.update_peers();
+        if let Err(error) = result {
+            self.remember_pending_cleanup(&error);
+            self.emit_error(error.clone());
+            return Err(error);
+        }
+        Ok(self.shared.snapshot.borrow().clone())
+    }
+    fn attach_publications(&mut self, peer_id: &str) -> Result<(), NativeError> {
+        let peer = self.peers.get_mut(peer_id).expect("known peer");
+        for source in self.publications.values() {
+            peer.port.set_source(source.kind(), Some(source.as_ref()))?;
+        }
+        Ok(())
+    }
+    fn send_manifest(&mut self, peer_id: &str) -> Result<(), NativeError> {
+        let peer = self.peers.get(peer_id).expect("known peer");
+        if !peer.remote_description {
+            return Ok(());
+        }
+        let slots = peer.port.slots();
+        let sources = self
+            .publications
+            .iter()
+            .map(|(id, source)| {
+                let slot = slots
+                    .iter()
+                    .find(|slot| slot.kind == source.kind())
+                    .ok_or_else(|| {
+                        NativeError::new("missing-slot", "Publication has no negotiated media slot")
+                    })?;
+                Ok(SourceBinding {
+                    id: id.clone(),
+                    kind: source.kind(),
+                    mid: slot.mid.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>, NativeError>>()?;
+        self.signal(
+            peer_id,
+            SignalPayload::Sources {
+                revision: self.source_revision,
+                sources,
+            },
+        )
+    }
+    fn validate_peer_manifest(&self, peer_id: &str) -> Result<(), NativeError> {
+        let peer = self.peers.get(peer_id).expect("known peer");
+        if !peer.remote_description {
+            return Ok(());
+        }
+        let slots = peer.port.slots();
+        if peer.source_manifest.as_ref().is_some_and(|(_, sources)| {
+            sources.iter().any(|source| {
+                !slots
+                    .iter()
+                    .any(|slot| slot.kind == source.kind && slot.mid == source.mid)
+            })
+        }) {
+            return Err(NativeError::new(
+                "invalid-sources",
+                "Source manifest does not match negotiated slots",
+            ));
+        }
+        Ok(())
+    }
+    async fn media_stats(&mut self) -> Result<Vec<PeerMediaStats>, NativeError> {
+        if self.shared.snapshot.borrow().state != State::Joined {
+            return Err(NativeError::new(
+                "invalid-state",
+                "Join a session before reading media observations",
+            ));
+        }
+        let mut stats = Vec::new();
+        for (peer_id, peer) in &mut self.peers {
+            if !peer.remote_description {
+                continue;
+            }
+            let media = interruptible(
+                peer.port.media_stats(),
+                &mut self.control,
+                &mut self.overflow_rx,
+                self.generation,
+                Duration::from_secs(5),
+            )
+            .await?;
+            stats.push(PeerMediaStats {
+                peer_id: peer_id.clone(),
+                media,
+            });
+        }
+        Ok(stats)
+    }
     fn remove_peer(&mut self, peer_id: &str) {
         if let Some(mut peer) = self.peers.remove(peer_id) {
             peer.port.close();
             self.update_peers();
         }
     }
+    async fn end_session(&mut self) {
+        let result = self.teardown(false).await;
+        // A stop can interrupt an operation or arrive while its failure is being cleaned up.
+        // That stop must acknowledge this cleanup result even if its own teardown is empty.
+        if let Err(error) = result {
+            self.remember_pending_cleanup(&error);
+        }
+    }
+    fn remember_pending_cleanup(&mut self, error: &NativeError) {
+        if self.control.borrow().sequence != self.processed_control {
+            self.pending_cleanup_error
+                .get_or_insert_with(|| error.clone());
+        }
+    }
     async fn teardown(&mut self, destroy: bool) -> Result<(), NativeError> {
+        if destroy {
+            self.commands.close();
+        }
         self.generation += 1;
         self.shared
             .events
@@ -654,7 +976,20 @@ impl Actor {
         for (_, mut peer) in std::mem::take(&mut self.peers) {
             peer.port.close();
         }
-        let result = if let Some(mut signaling) = self.signaling.take() {
+        let mut result = self.pending_cleanup_error.take().map_or(Ok(()), Err);
+        let queued_result = self.reject_pending().await;
+        if result.is_ok() {
+            result = queued_result;
+        }
+        for (_, source) in std::mem::take(&mut self.publications) {
+            if let Err(error) = close_source(source).await {
+                if result.is_ok() {
+                    result = Err(error);
+                }
+            }
+        }
+        self.source_revision += 1;
+        let signaling_result = if let Some(mut signaling) = self.signaling.take() {
             tokio::time::timeout(Duration::from_secs(2), signaling.close())
                 .await
                 .unwrap_or_else(|_| {
@@ -666,6 +1001,9 @@ impl Actor {
         } else {
             Ok(())
         };
+        if result.is_ok() {
+            result = signaling_result;
+        }
         self.ice.clear();
         while self.input_rx.try_recv().is_ok() {}
         if destroy {
@@ -689,17 +1027,84 @@ impl Actor {
         );
         result
     }
+    async fn reject_pending(&mut self) -> Result<(), NativeError> {
+        // Queue admission is bounded. Close abandoned owned sources concurrently so teardown
+        // has one source-close deadline, not one deadline for every queued publication.
+        let mut cleanup = tokio::task::JoinSet::new();
+        for _ in 0..self.commands.len() {
+            let Ok(queued) = self.commands.try_recv() else {
+                break;
+            };
+            cleanup.spawn(reject(queued.command, NativeError::cancelled()));
+        }
+        let mut first_error = None;
+        while let Some(result) = cleanup.join_next().await {
+            match result {
+                Ok(Some(error)) => {
+                    first_error.get_or_insert(error);
+                }
+                Err(_) => {
+                    first_error.get_or_insert(NativeError::new(
+                        "cleanup-failed",
+                        "Queued source cleanup failed",
+                    ));
+                }
+                Ok(None) => {}
+            }
+        }
+        first_error.map_or(Ok(()), Err)
+    }
 }
 
-fn reject(command: Command, error: NativeError) {
+async fn reject(command: Command, error: NativeError) -> Option<NativeError> {
     match command {
-        Command::Join(_, reply) => {
+        Command::Join(_, reply) | Command::Unpublish(_, reply) => {
             let _ = reply.send(Err(error));
         }
         Command::Send(_, reply) => {
             let _ = reply.send(Err(error));
         }
+        Command::MediaStats(reply) => {
+            let _ = reply.send(Err(error));
+        }
+        Command::Publish(_, source, reply) => {
+            let cleanup_error = close_source(source).await.err();
+            let _ = reply.send(Err(cleanup_error.clone().unwrap_or(error)));
+            return cleanup_error;
+        }
     }
+    None
+}
+async fn close_source(mut source: Box<dyn SourcePort>) -> Result<(), NativeError> {
+    tokio::time::timeout(Duration::from_secs(2), source.close())
+        .await
+        .unwrap_or_else(|_| {
+            Err(NativeError::new(
+                "cleanup-timeout",
+                "Source cleanup exceeded its deadline",
+            ))
+        })
+}
+fn validate_manifest(sources: &[SourceBinding]) -> Result<(), NativeError> {
+    use std::collections::BTreeSet;
+    let mut ids = BTreeSet::new();
+    let mut kinds = BTreeSet::new();
+    let mut mids = BTreeSet::new();
+    if sources.len() > 3
+        || sources.iter().any(|source| {
+            !valid_peer_id(&source.id)
+                || !valid_peer_id(&source.mid)
+                || !ids.insert(&source.id)
+                || !kinds.insert(source.kind)
+                || !mids.insert(&source.mid)
+        })
+    {
+        return Err(NativeError::new(
+            "invalid-sources",
+            "Source manifest exceeds limits or repeats identifiers/slots",
+        ));
+    }
+    Ok(())
 }
 async fn interruptible<T>(
     future: PortFuture<'_, T>,

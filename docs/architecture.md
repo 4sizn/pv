@@ -50,16 +50,16 @@ ParentView exposes `parent` and `child` explicitly in the service domain. SDK fu
 ## Delivery sequence
 
 1. Repository, boundaries, contracts, role-neutral browser mesh, authenticated Tokio signaling, TURN configuration and product service tests.
-2. Native data transport on macOS (current slice), followed by OS capture/render adapters and validation on every target. Raw frames remain native.
+2. Native data and media transport on macOS, followed by OS capture/render adapters and validation on every target. Raw frames remain native.
 3. Persistent authenticated device pairing, product approval UI, push lifecycle, OS remote-input adapters and exclusive control grants.
 4. Cross-device performance, forced relay, network transition, permission-revocation and repeated-lifecycle acceptance tests.
 
 Initial laboratory verification does not substitute for steps 2–4. Native capture, mobile delivery and remote control remain explicit unfinished work until verified.
 
-## Native data slice
+## Native media transport
 
 The native SDK has three crates: `pv-media-runtime` depends on injected ports, `pv-media-libwebrtc` implements the engine, and `pv-media-native` composes the engine with WebSocket signaling. Cargo metadata tests enforce production/build dependency allowlists, including renamed and target-specific dependencies. The DOM-free `@parentview/media-sdk/native` entry depends only on its own contracts and RxJS; Tauri invoke is injected by the desktop app.
 
 Membership and channel readiness are distinct snapshots. The lexicographically smaller server-authenticated peer ID creates the ordered data channel and offer. Native snapshots carry monotonic revisions; stale callbacks are generation-filtered and late JS completions cannot restore an old session. Send results mean local engine acceptance, not application delivery. Public messages are bounded UTF-8 strings; errors contain stable codes and safe messages. No SDP, ICE or raw media API is exposed to the service layer.
 
-The data-only native path currently has no publication/capture/render operations. `nativeDataChannels` is macOS-gated; `nativeMedia` and `remoteInput` remain false. See [native engine build and limits](../crates/media-native/README.md).
+The Rust native client owns up to one publication of each kind: camera, screen and microphone. The offerer reserves two video and one audio sendrecv slots; the answerer adopts the offered slots using explicit kind/MID bindings. Publishing attaches a source to its existing sender; removing it detaches the sender and closes the source. Full revisioned manifests describe current remote publications independently from receiver lifetime. Native sources and decoded frames stay in Rust. The Rx facade projects local/remote source descriptions without owning capture or negotiation. Physical capture and native rendering remain unimplemented; the existing Tauri commands expose data and metadata only. `nativeDataChannels` is macOS-gated; `nativeMedia` and `remoteInput` remain false. See [native engine build and limits](../crates/media-native/README.md).

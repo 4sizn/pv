@@ -1,6 +1,6 @@
 //! Window/document-owned IPC resources only. Session state and negotiation remain in the native SDK.
 use pv_media_native::{
-    create_client, EventBatch, JoinOptions, NativeDataClient, NativeError, SendResult, Snapshot,
+    create_client, EventBatch, JoinOptions, NativeError, NativeMediaClient, SendResult, Snapshot,
 };
 use serde::Serialize;
 use std::{
@@ -24,7 +24,7 @@ struct Registry {
 struct Entry {
     owner: String,
     document: u64,
-    client: NativeDataClient,
+    client: NativeMediaClient,
 }
 
 #[derive(Serialize)]
@@ -107,7 +107,7 @@ impl NativeDataHost {
         })
     }
 
-    fn client(&self, owner: &str, id: &str) -> Result<NativeDataClient, NativeError> {
+    fn client(&self, owner: &str, id: &str) -> Result<NativeMediaClient, NativeError> {
         let registry = self.lock()?;
         let entry = registry.clients.get(id).ok_or_else(|| {
             NativeError::new("unknown_client", "Native client handle is not active")

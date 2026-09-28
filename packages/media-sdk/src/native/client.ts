@@ -1,39 +1,43 @@
 import { BehaviorSubject, distinctUntilChanged, map, Subject } from "rxjs";
 import type {
-  NativeDataBatch,
-  NativeDataClientStreams,
-  NativeDataError,
-  NativeDataEvent,
-  NativeDataJoinOptions,
   NativeDataMessage,
   NativeDataSendResult,
-  NativeDataSnapshot,
-  NativeDataState,
-  NativeDataTransportPort,
+  NativeLocalSource,
+  NativeMediaBatch,
+  NativeMediaClientStreams,
+  NativeMediaError,
+  NativeMediaEvent,
+  NativeMediaJoinOptions,
+  NativeMediaSnapshot,
+  NativeMediaState,
+  NativeMediaTransportPort,
+  NativeRemoteSource,
 } from "./types.js";
 
 const MAX_DATA_BYTES = 16_384;
-const STATES: readonly NativeDataState[] = ["idle", "joining", "joined", "leaving", "destroyed"];
+const STATES: readonly NativeMediaState[] = ["idle", "joining", "joined", "leaving", "destroyed"];
 
 /**
  * Projects native snapshots/events into Rx. Owns only the IPC read loop and its streams,
  * never session transitions or negotiation. destroy is terminal even if host cleanup fails.
  */
-export class NativeDataClient implements NativeDataClientStreams {
+export class NativeMediaClient implements NativeMediaClientStreams {
   readonly state$;
   readonly peers$;
   readonly readyPeers$;
+  readonly localSources$;
+  readonly remoteSources$;
   readonly messages$;
   readonly errors$;
-  #transport: NativeDataTransportPort;
-  #snapshots: BehaviorSubject<NativeDataSnapshot>;
+  #transport: NativeMediaTransportPort;
+  #snapshots: BehaviorSubject<NativeMediaSnapshot>;
   #messages = new Subject<NativeDataMessage>();
-  #errors = new Subject<NativeDataError>();
+  #errors = new Subject<NativeMediaError>();
   #disposed = false;
   #destruction?: Promise<void>;
   #pending = new Set<() => void>();
 
-  private constructor(transport: NativeDataTransportPort, snapshot: NativeDataSnapshot) {
+  private constructor(transport: NativeMediaTransportPort, snapshot: NativeMediaSnapshot) {
     this.#transport = transport;
     this.#snapshots = new BehaviorSubject(snapshot);
     this.state$ = this.#snapshots.asObservable().pipe(
@@ -48,13 +52,23 @@ export class NativeDataClient implements NativeDataClientStreams {
       map((value) => value.readyPeers),
       distinctUntilChanged(samePeers),
     );
+    this.localSources$ = this.#snapshots.asObservable().pipe(
+      map((value) => value.localSources),
+      distinctUntilChanged(sameLocalSources),
+    );
+    this.remoteSources$ = this.#snapshots.asObservable().pipe(
+      map((value) => value.remoteSources),
+      distinctUntilChanged(sameRemoteSources),
+    );
     this.messages$ = this.#messages.asObservable();
     this.errors$ = this.#errors.asObservable();
   }
 
-  static async create(options: { transport: NativeDataTransportPort }): Promise<NativeDataClient> {
+  static async create(options: {
+    transport: NativeMediaTransportPort;
+  }): Promise<NativeMediaClient> {
     const { transport } = options;
-    let snapshot: NativeDataSnapshot;
+    let snapshot: NativeMediaSnapshot;
     try {
       snapshot = parseSnapshot(await transport.open());
       if (snapshot.state === "destroyed") throw new Error("Native client is already destroyed");
@@ -66,12 +80,12 @@ export class NativeDataClient implements NativeDataClientStreams {
       }
       throw error;
     }
-    const client = new NativeDataClient(transport, snapshot);
+    const client = new NativeMediaClient(transport, snapshot);
     void client.#read();
     return client;
   }
 
-  async join(options: NativeDataJoinOptions): Promise<void> {
+  async join(options: NativeMediaJoinOptions): Promise<void> {
     this.#assertAlive();
     const snapshot = await this.#wait(this.#transport.join(options));
     this.#assertAlive();
@@ -165,7 +179,7 @@ export class NativeDataClient implements NativeDataClientStreams {
     }
   }
 
-  #apply(snapshot: NativeDataSnapshot, terminal = false): boolean {
+  #apply(snapshot: NativeMediaSnapshot, terminal = false): boolean {
     if (this.#disposed && !terminal) return false;
     const previous = this.#snapshots.value;
     if (snapshot.revision < previous.revision) return false;
@@ -174,7 +188,9 @@ export class NativeDataClient implements NativeDataClientStreams {
         snapshot.state !== previous.state ||
         snapshot.peerId !== previous.peerId ||
         !samePeers(snapshot.peers, previous.peers) ||
-        !samePeers(snapshot.readyPeers, previous.readyPeers)
+        !samePeers(snapshot.readyPeers, previous.readyPeers) ||
+        !sameLocalSources(snapshot.localSources, previous.localSources) ||
+        !sameRemoteSources(snapshot.remoteSources, previous.remoteSources)
       ) {
         throw invalidPayload();
       }
@@ -205,6 +221,77 @@ function samePeers(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((id, index) => id === b[index]);
 }
 
+function sameLocalSources(
+  a: readonly NativeLocalSource[],
+  b: readonly NativeLocalSource[],
+): boolean {
+  return (
+    a.length === b.length &&
+    a.every((source, index) => source.id === b[index].id && source.kind === b[index].kind)
+  );
+}
+
+function sameRemoteSources(
+  a: readonly NativeRemoteSource[],
+  b: readonly NativeRemoteSource[],
+): boolean {
+  return (
+    sameLocalSources(a, b) &&
+    a.every((source, index) => source.peerId === b[index].peerId && source.mid === b[index].mid)
+  );
+}
+
+function sourceIdentifier(value: unknown): value is string {
+  return nonempty(value, 128) && byteLength(value) <= 128 && !/\p{Cc}/u.test(value);
+}
+
+function parseSource(value: unknown): NativeLocalSource {
+  if (
+    !record(value) ||
+    !sourceIdentifier(value.id) ||
+    (value.kind !== "camera" && value.kind !== "screen" && value.kind !== "microphone")
+  ) {
+    throw invalidPayload();
+  }
+  return Object.freeze({ id: value.id, kind: value.kind });
+}
+
+function parseLocalSources(value: unknown): readonly NativeLocalSource[] {
+  if (!Array.isArray(value) || value.length > 3) throw invalidPayload();
+  const sources = Array.from(value, parseSource);
+  if (
+    new Set(sources.map((source) => source.id)).size !== sources.length ||
+    new Set(sources.map((source) => source.kind)).size !== sources.length
+  ) {
+    throw invalidPayload();
+  }
+  return Object.freeze(sources);
+}
+
+function parseRemoteSources(
+  value: unknown,
+  peers: readonly string[],
+): readonly NativeRemoteSource[] {
+  if (!Array.isArray(value) || value.length > 9) throw invalidPayload();
+  const sources = Array.from(value, (value: unknown) => {
+    const source = parseSource(value);
+    if (
+      !record(value) ||
+      typeof value.peerId !== "string" ||
+      !peers.includes(value.peerId) ||
+      !sourceIdentifier(value.mid)
+    ) {
+      throw invalidPayload();
+    }
+    return Object.freeze({ ...source, peerId: value.peerId, mid: value.mid });
+  });
+  for (const field of ["id", "kind", "mid"] as const) {
+    const keys = sources.map((source) => JSON.stringify([source.peerId, source[field]]));
+    if (new Set(keys).size !== sources.length) throw invalidPayload();
+  }
+  return Object.freeze(sources);
+}
+
 function parsePeers(value: unknown): readonly string[] {
   if (
     !Array.isArray(value) ||
@@ -217,23 +304,27 @@ function parsePeers(value: unknown): readonly string[] {
   return Object.freeze([...value]);
 }
 
-function parseSnapshot(value: unknown): NativeDataSnapshot {
+function parseSnapshot(value: unknown): NativeMediaSnapshot {
   if (
     !record(value) ||
     typeof value.revision !== "number" ||
     !Number.isSafeInteger(value.revision) ||
     value.revision < 0 ||
-    !STATES.includes(value.state as NativeDataState) ||
+    !STATES.includes(value.state as NativeMediaState) ||
     (value.peerId !== null && !nonempty(value.peerId))
   ) {
     throw invalidPayload();
   }
   const peers = parsePeers(value.peers);
   const readyPeers = parsePeers(value.readyPeers);
+  const localSources = parseLocalSources(value.localSources);
+  const remoteSources = parseRemoteSources(value.remoteSources, peers);
   if (
     (value.state === "joined" && value.peerId === null) ||
     readyPeers.some((id) => !peers.includes(id)) ||
     peers.includes(value.peerId as string) ||
+    ((value.state === "idle" || value.state === "joining" || value.state === "destroyed") &&
+      (localSources.length > 0 || remoteSources.length > 0)) ||
     ((value.state === "idle" || value.state === "destroyed") &&
       (value.peerId !== null || peers.length > 0))
   ) {
@@ -241,14 +332,16 @@ function parseSnapshot(value: unknown): NativeDataSnapshot {
   }
   return Object.freeze({
     revision: value.revision,
-    state: value.state as NativeDataState,
+    state: value.state as NativeMediaState,
     peerId: value.peerId as string | null,
     peers,
     readyPeers,
+    localSources,
+    remoteSources,
   });
 }
 
-function parseEvent(value: unknown): NativeDataEvent {
+function parseEvent(value: unknown): NativeMediaEvent {
   if (!record(value)) throw invalidPayload();
   if (
     value.type === "message" &&
@@ -272,7 +365,7 @@ function parseEvent(value: unknown): NativeDataEvent {
   throw invalidPayload();
 }
 
-function parseBatch(value: unknown): NativeDataBatch {
+function parseBatch(value: unknown): NativeMediaBatch {
   if (!record(value) || !Array.isArray(value.events) || value.events.length > 32)
     throw invalidPayload();
   return { snapshot: parseSnapshot(value.snapshot), events: value.events.map(parseEvent) };

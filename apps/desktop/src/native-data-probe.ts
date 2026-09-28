@@ -1,7 +1,7 @@
 import type {
-  NativeDataClientStreams,
-  NativeDataJoinOptions,
   NativeDataSendResult,
+  NativeMediaClientStreams,
+  NativeMediaJoinOptions,
 } from "@parentview/media-sdk/native";
 import {
   filter,
@@ -25,8 +25,8 @@ export interface NativeProbeView {
 }
 
 export interface NativeProbeClient
-  extends Pick<NativeDataClientStreams, "readyPeers$" | "messages$" | "errors$"> {
-  join(options: NativeDataJoinOptions): Promise<void>;
+  extends Pick<NativeMediaClientStreams, "readyPeers$" | "messages$" | "errors$"> {
+  join(options: NativeMediaJoinOptions): Promise<void>;
   send(data: string): Promise<NativeDataSendResult>;
   leave(): Promise<void>;
   destroy(): Promise<void>;
