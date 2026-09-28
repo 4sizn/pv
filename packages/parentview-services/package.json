@@ -1,0 +1,13 @@
+{
+  "name": "@parentview/services",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@parentview/media-sdk": "workspace:*",
+    "rxjs": "7.8.2"
+  }
+}

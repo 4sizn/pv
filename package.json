@@ -2,20 +2,25 @@
   "name": "parentview-next",
   "private": true,
   "type": "module",
-  "workspaces": ["packages/*", "apps/*"],
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
   "scripts": {
-    "dev": "bun run --cwd apps/desktop dev",
+    "dev": "bun run build:sdk && bun run --cwd apps/desktop dev",
     "dev:server": "cargo run -p parentview-signaling",
-    "dev:desktop": "bun run --cwd apps/desktop tauri dev",
+    "dev:desktop": "bun run build:sdk && bun run --cwd apps/desktop tauri dev",
     "test": "bun test packages scripts",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "format": "biome check --write .",
     "check:architecture": "bun scripts/check-architecture.ts",
     "build:sdk": "bun run --cwd packages/media-sdk build",
-    "build:web": "bun run --cwd apps/desktop build",
-    "check": "bun run check:architecture && bun run typecheck && bun run lint && bun test packages scripts",
-    "test:rust": "cargo test -p parentview-signaling"
+    "build:web": "bun run build:sdk && bun run --cwd apps/desktop build",
+    "check": "bun run build:sdk && bun run check:architecture && bun run typecheck && bun run lint && bun test packages scripts",
+    "test:rust": "cargo test -p parentview-signaling",
+    "test:e2e": "playwright test",
+    "build:desktop": "bun run build:sdk && bun run --cwd apps/desktop tauri build --no-bundle"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.14",
@@ -23,5 +28,7 @@
     "typescript": "5.9.3",
     "@playwright/test": "^1.58.0"
   },
-  "dependencies": { "rxjs": "7.8.2" }
+  "dependencies": {
+    "rxjs": "7.8.2"
+  }
 }

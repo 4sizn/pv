@@ -1,0 +1,31 @@
+{
+  "name": "@parentview/media-sdk",
+  "version": "0.1.0",
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./browser": {
+      "types": "./dist/browser/index.d.ts",
+      "import": "./dist/browser/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.core.json && tsc -p tsconfig.build.json",
+    "test": "bun test tests"
+  },
+  "peerDependencies": {
+    "rxjs": "^7.8.2"
+  },
+  "devDependencies": {
+    "rxjs": "7.8.2",
+    "typescript": "5.9.3"
+  }
+}

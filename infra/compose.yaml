@@ -1,0 +1,15 @@
+services:
+  coturn:
+    image: coturn/coturn:4.18.0-r0
+    restart: unless-stopped
+    environment:
+      TURN_SHARED_SECRET: ${TURN_SHARED_SECRET:?Set TURN_SHARED_SECRET in your local environment}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - 'exec turnserver -c /etc/coturn/turnserver.conf --static-auth-secret="$$TURN_SHARED_SECRET"'
+    ports:
+      - "127.0.0.1:3478:3478/udp"
+      - "127.0.0.1:3478:3478/tcp"
+      - "127.0.0.1:49160-49200:49160-49200/udp"
+    volumes:
+      - ./coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro

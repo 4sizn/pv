@@ -1,0 +1,52 @@
+name: CI
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  typescript:
+    name: TypeScript and web build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@v7.0.0
+        with:
+          node-version: "22.19.0"
+          package-manager-cache: false
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2.2.0
+        with:
+          bun-version: "1.1.24"
+      - name: Install locked dependencies
+        run: bun install --frozen-lockfile
+      - name: Check architecture, types, style and tests
+        run: bun run check
+      - name: Build browser laboratory
+        run: bun run build:web
+
+  rust:
+    name: Rust signaling service
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Rust 1.88.0
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --component rustfmt --component clippy
+          rustup default 1.88.0
+      - name: Check Rust formatting
+        run: cargo fmt --all --check
+      - name: Test signaling service
+        run: cargo test --locked -p parentview-signaling
+      - name: Lint signaling service
+        run: cargo clippy --locked -p parentview-signaling --all-targets -- -D warnings

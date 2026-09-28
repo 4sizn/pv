@@ -1,0 +1,17 @@
+[package]
+name = "parentview-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "ParentView mesh laboratory desktop host"
+
+[lib]
+name = "parentview_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde.workspace = true
+tauri = { version = "2", features = [] }

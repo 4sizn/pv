@@ -8,12 +8,12 @@
 
 ## Tasks
 
-- [ ] Root workspace: Git feature branch, package/Cargo workspaces, locked dependencies, architecture checks and documentation.
-- [ ] SDK: implement the public API in `docs/protocol.md`, DOM-free ports, readonly streams, mesh peer lifecycle and browser adapters. Verify late completion after leave, peer departure, repeated teardown and four-peer data/media exchange.
-- [ ] Server: implement authenticated routes and wire contract in `docs/protocol.md`; test room capacity, forged identity/routing, token validation and disconnect cleanup. Configure bounded queues, timeouts and expiring state.
-- [ ] Product services: explicit `parent`/`child` roles, separate session/screen/control approval, receiver-owned exclusive control grants, Network/Device ports and lifecycle tests. Core must import no adapter or platform package.
-- [ ] Laboratory/Tauri: render live local/remote streams and connection status using the public SDK; expose actual native capability status. Build the host on macOS; do not claim native media implementation.
-- [ ] Validation: package export/type checks, architecture boundary tests, Bun tests, Rust tests/clippy, desktop build, real browser multi-peer integration and screenshot inspection.
+- [x] Root workspace: Git feature branch, package/Cargo workspaces, locked dependencies, architecture checks and documentation.
+- [x] SDK: implement the public API in `docs/protocol.md`, DOM-free ports, readonly streams, mesh peer lifecycle and browser adapters. Verify late completion after leave, peer departure, repeated teardown and four-peer data/media exchange.
+- [x] Server: implement authenticated routes and wire contract in `docs/protocol.md`; test room capacity, forged identity/routing, token validation and disconnect cleanup. Configure bounded queues, timeouts and expiring state.
+- [x] Product services: explicit `parent`/`child` roles, separate session/screen/control approval, receiver-owned exclusive control grants, Network/Device ports and lifecycle tests. Core must import no adapter or platform package.
+- [x] Laboratory/Tauri: render live local/remote streams and connection status using the public SDK; expose actual native capability status. Build the host on macOS; do not claim native media implementation.
+- [x] Validation: package export/type checks, architecture boundary tests, Bun tests, Rust tests/clippy, desktop build, real browser multi-peer integration and screenshot inspection. See `docs/verification.md` for exact scope and remaining milestones.
 
 ## Completion criteria for this bootstrap
 
