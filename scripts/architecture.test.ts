@@ -68,3 +68,100 @@ test("circular module dependencies are rejected", () => {
   ]);
   expect(failures.some((failure) => failure.rule === "acyclic-dependencies")).toBe(true);
 });
+
+test("core and services reject external platform dependencies in static and runtime imports", () => {
+  const failures = inspectArchitecture([
+    {
+      path: "packages/media-sdk/src/core/io.ts",
+      text: 'import { readFile } from "node:fs"; const net = import("node:net"); const fs = require("fs");',
+    },
+    {
+      path: "packages/parentview-services/src/io.ts",
+      text: 'import { readFile } from "node:fs"; const net = import("node:net"); const fs = require("fs");',
+    },
+  ]);
+  expect(failures.filter((failure) => failure.rule === "core-dependency")).toHaveLength(3);
+  expect(failures.filter((failure) => failure.rule === "service-dependency")).toHaveLength(3);
+});
+
+test("import-type expressions cannot introduce concrete adapters or external platform types", () => {
+  const failures = inspectArchitecture([
+    {
+      path: "packages/media-sdk/src/core/types.ts",
+      text: 'type Adapter = import("../browser/peer.js").BrowserPeerFactory; type Network = import("node:net").Socket;',
+    },
+    {
+      path: "packages/parentview-services/src/types.ts",
+      text: 'type Adapter = import("@parentview/media-sdk/browser").BrowserMediaClientOptions; type Network = import("node:net").Socket;',
+    },
+    { path: "packages/media-sdk/src/browser/peer.ts", text: "export class BrowserPeerFactory {}" },
+    {
+      path: "packages/media-sdk/src/browser/index.ts",
+      text: "export type BrowserMediaClientOptions = {};",
+    },
+  ]);
+  expect(failures.filter((failure) => failure.rule === "core-dependency")).toHaveLength(2);
+  expect(failures.filter((failure) => failure.rule === "service-dependency")).toHaveLength(2);
+});
+
+test("services cannot reach private SDK modules through relative imports", () => {
+  const failures = inspectArchitecture([
+    {
+      path: "packages/parentview-services/src/session.ts",
+      text: `
+        import { MediaController } from "../../media-sdk/src/core/controller.js";
+        export { MediaController } from "../../media-sdk/src/core/controller.js";
+        const controller = import("../../media-sdk/src/core/controller.js");
+        type Controller = import("../../media-sdk/src/core/controller.js").MediaController;
+      `,
+    },
+    {
+      path: "packages/media-sdk/src/core/controller.ts",
+      text: "export class MediaController {}",
+    },
+  ]);
+  expect(failures.filter((failure) => failure.rule === "service-dependency")).toHaveLength(4);
+});
+
+test("SDK role literals are rejected when written with backticks", () => {
+  const failures = inspectArchitecture([
+    {
+      path: "packages/media-sdk/src/core/types.ts",
+      text: "export const roles = [`parent`, `child`]; export const source = `camera`;",
+    },
+  ]);
+  expect(failures.filter((failure) => failure.rule === "role-neutral-sdk")).toHaveLength(2);
+});
+
+test("import-type references participate in dependency cycle detection", () => {
+  const failures = inspectArchitecture([
+    { path: "packages/media-sdk/src/core/a.ts", text: 'export type A = import("./b.js").B;' },
+    { path: "packages/media-sdk/src/core/b.ts", text: 'export type B = import("./a.js").A;' },
+  ]);
+  expect(failures.some((failure) => failure.rule === "acyclic-dependencies")).toBe(true);
+});
+
+test("layer rules preserve RxJS, local ports, public SDK types and concrete adapter imports", () => {
+  expect(
+    inspectArchitecture([
+      {
+        path: "packages/media-sdk/src/core/controller.ts",
+        text: 'import { Observable } from "rxjs"; import { map } from "rxjs/operators"; type Port = import("./ports.js").Port;',
+      },
+      { path: "packages/media-sdk/src/core/ports.ts", text: "export type Port = {};" },
+      {
+        path: "packages/media-sdk/src/index.ts",
+        text: 'export type { Port } from "./core/ports.js";',
+      },
+      {
+        path: "packages/parentview-services/src/session.ts",
+        text: 'import { Subject } from "rxjs"; import type { Port } from "@parentview/media-sdk"; type PublicPort = import("@parentview/media-sdk").Port; export type { Port } from "../../media-sdk/src/index.js"; export type { Local } from "./ports.js";',
+      },
+      { path: "packages/parentview-services/src/ports.ts", text: "export type Local = {};" },
+      {
+        path: "packages/media-sdk/src/browser/peer.ts",
+        text: 'import { connect } from "node:net"; import { Observable } from "rxjs"; const connection = new RTCPeerConnection();',
+      },
+    ]),
+  ).toEqual([]);
+});

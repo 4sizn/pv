@@ -36,15 +36,19 @@ bun run dev:desktop
 ## 검증
 
 ```sh
-bun run check
-cargo test -p parentview-signaling
-cargo clippy -p parentview-signaling --all-targets -- -D warnings
-cargo fmt --all --check
-bun run build:web
-bun run test:e2e
+# 기본: 레이어/타입/스타일/단위 테스트 + 독립 SDK 패키지 + Rust + 웹 빌드
+bun run verify
+
+# 업로드 전: 기본 검사 + 실제 4인 WebRTC 브라우저 E2E
+bun run verify:all
+
+# Tauri 개발 도구가 설치된 macOS에서 호스트 테스트와 debug 실행 파일 빌드
+bun run verify:desktop
 ```
 
-브라우저 E2E는 설치된 Google Chrome을 별도 테스트 프로필로 실행하고 가상 카메라·마이크를 사용합니다. 실제 WebRTC 연결과 인코딩/디코딩, 데이터 채널을 검증하지만 실제 하드웨어 캡처 품질 검증을 대신하지 않습니다. 로컬 1420/8787 포트가 비어 있어야 합니다. 테스트가 자기 서버를 시작하고 종료합니다. 캡처 증거는 Git에서 제외한 `proof/`에 저장됩니다.
+브라우저 E2E는 로컬에서는 설치된 Google Chrome, `CI=true`에서는 Playwright가 설치한 Chromium을 사용합니다. 가상 카메라·마이크로 실제 WebRTC 연결과 인코딩/디코딩, 데이터 채널을 검증하지만 실제 하드웨어 캡처 품질 검증을 대신하지 않습니다. 로컬 1420/8787 포트가 비어 있어야 합니다. 테스트가 자기 서버를 시작하고 종료합니다. 캡처 증거는 Git에서 제외한 `proof/`에 저장됩니다.
+
+GitHub Actions는 타입/SDK 패키지, Rust 시그널링, 브라우저 E2E, macOS Tauri 검사를 각각 수행하고 `Required checks`로 합산합니다. 한 검사라도 실패·취소·건너뛰기 상태이면 합산 검사는 실패합니다. 원격 저장소의 실제 병합 차단은 별도 branch protection/ruleset 설정이 필요합니다. [검사별 범위와 실행 방법](docs/testing.md)을 참고하세요.
 
 ## coturn 컨테이너 템플릿
 

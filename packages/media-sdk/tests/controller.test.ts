@@ -67,6 +67,7 @@ class FakePeer implements PeerPort {
   offerGate?: ReturnType<typeof deferred<Description>>;
   readonly mutations: string[] = [];
   readonly attached = new Map<string, MediaTrackPort>();
+  readonly sent: string[] = [];
   createDataChannel() {
     this.channels++;
   }
@@ -101,7 +102,9 @@ class FakePeer implements PeerPort {
   trackBindings() {
     return [...this.attached.keys()].map((id, index) => ({ id, mid: String(index) }));
   }
-  send(_data: string) {}
+  send(data: string) {
+    this.sent.push(data);
+  }
   close() {
     this.closed++;
     this.signalingState = "closed";
@@ -126,6 +129,158 @@ async function setup(selfId = "b", peerIds = ["a"]) {
 }
 
 describe("media controller resource ownership", () => {
+  test("unexpected signaling loss releases the session and allows a clean rejoin", async () => {
+    const { client, signaling, peers, peer } = await setup();
+    const local = new FakeTrack("local");
+    const remote = new FakeTrack("remote");
+    const states: MediaState[] = [];
+    const errors: Error[] = [];
+    const messages: string[] = [];
+    let membership: readonly string[] = [];
+    let tracks: readonly RemoteTrack[] = [];
+    client.state$.subscribe((state) => states.push(state));
+    client.errors$.subscribe((error) => errors.push(error));
+    client.messages$.subscribe((message) => messages.push(message.data));
+    client.peers$.subscribe((value) => {
+      membership = value;
+    });
+    client.tracks$.subscribe((value) => {
+      tracks = value;
+    });
+    await client.publish({ id: "camera", kind: "camera", track: local });
+    peer.events.next({ type: "track", mid: "0", track: remote });
+    signaling.events.next({
+      type: "signal",
+      from: "a",
+      payload: { type: "track", id: "remote-camera", kind: "camera", mid: "0" },
+    });
+    await settle();
+    expect(tracks).toHaveLength(1);
+
+    signaling.events.next({ type: "closed" });
+    expect(states.at(-1)).toBe("idle");
+    expect(membership).toEqual([]);
+    expect(tracks).toEqual([]);
+    expect([local.stops, remote.stops, peer.closed, signaling.closed]).toEqual([1, 1, 1, 1]);
+    expect(errors.map((error) => error.message)).toEqual(["Signaling connection closed"]);
+    expect(() => client.send("after disconnect")).toThrow("Join a room first");
+    peer.events.next({ type: "message", data: "stale message" });
+    signaling.events.next({ type: "peer-joined", peerId: "stale-peer" });
+    expect(messages).toEqual([]);
+    expect(peers.peers.has("stale-peer")).toBe(false);
+
+    signaling.membership = deferred();
+    const joining = client.join(credentials);
+    signaling.membership.resolve({ peerId: "b", peers: ["c"] });
+    await joining;
+    const replacement = peers.peers.get("c") as FakePeer;
+    replacement.events.next({ type: "message", data: "new session" });
+    expect(messages).toEqual(["new session"]);
+    expect(replacement.attached.size).toBe(0);
+    await client.destroy();
+    expect(local.stops).toBe(1);
+  });
+
+  test("a failed peer is isolated while other peers keep exchanging data", async () => {
+    const { client, peers, peer, signaling } = await setup("a", ["b", "c"]);
+    const healthy = peers.peers.get("c") as FakePeer;
+    const local = new FakeTrack("local");
+    const remote = new FakeTrack("failed-peer-track");
+    const errors: Error[] = [];
+    const messages: string[] = [];
+    let membership: readonly string[] = [];
+    client.errors$.subscribe((error) => errors.push(error));
+    client.messages$.subscribe((message) => messages.push(message.data));
+    client.peers$.subscribe((value) => {
+      membership = value;
+    });
+    await client.publish({ id: "camera", kind: "camera", track: local });
+    peer.events.next({ type: "track", mid: "0", track: remote });
+
+    const failure = new Error("engine connection failed");
+    peer.events.next({ type: "failed", error: failure });
+    peer.events.next({ type: "message", data: "stale" });
+    healthy.events.next({ type: "message", data: "still receiving" });
+    client.send("still sending");
+    expect(errors).toEqual([failure]);
+    expect(membership).toEqual(["c"]);
+    expect(messages).toEqual(["still receiving"]);
+    expect(healthy.sent).toEqual(["still sending"]);
+    expect(peer.sent).toEqual([]);
+    expect([peer.closed, healthy.closed, remote.stops, local.stops, signaling.closed]).toEqual([
+      1, 0, 1, 0, 0,
+    ]);
+    expect(healthy.attached.get("camera")).toBe(local);
+    await client.destroy();
+    expect(local.stops).toBe(1);
+    expect(healthy.closed).toBe(1);
+  });
+
+  test("invalid command order and duplicate publications retain caller track ownership", async () => {
+    const signaling = new FakeSignaling();
+    const client = new MediaClient({ signaling, peers: new FakeFactory() });
+    const owned = new FakeTrack("owned");
+    const rejected = new FakeTrack("rejected");
+    await expect(client.publish({ id: "camera", kind: "camera", track: owned })).rejects.toThrow(
+      "Join a room first",
+    );
+    expect(owned.stops).toBe(0);
+    const joining = client.join(credentials);
+    await expect(client.join(credentials)).rejects.toThrow("Leave the current session");
+    signaling.membership.resolve({ peerId: "a", peers: [] });
+    await joining;
+    await client.publish({ id: "camera", kind: "camera", track: owned });
+    await expect(client.publish({ id: "camera", kind: "camera", track: rejected })).rejects.toThrow(
+      "unique",
+    );
+    await expect(client.publish({ id: "second-id", kind: "camera", track: owned })).rejects.toThrow(
+      "already published",
+    );
+    await client.unpublish("camera");
+    await client.unpublish("camera");
+    expect(owned.stops).toBe(1);
+    await client.destroy();
+    expect(owned.stops).toBe(1);
+    expect(rejected.stops).toBe(0);
+  });
+
+  test("adapter disposal errors cannot prevent remaining resources from being released", async () => {
+    const { client, peers, peer, signaling } = await setup("a", ["b", "c"]);
+    const healthy = peers.peers.get("c") as FakePeer;
+    const first = new FakeTrack("first");
+    const second = new FakeTrack("second");
+    const errors: Error[] = [];
+    const states: MediaState[] = [];
+    client.errors$.subscribe((error) => errors.push(error));
+    client.state$.subscribe((state) => states.push(state));
+    await client.publish({ id: "camera", kind: "camera", track: first });
+    await client.publish({ id: "screen", kind: "screen", track: second });
+    signaling.close = () => {
+      signaling.closed++;
+      throw new Error("socket disposal failed");
+    };
+    peer.close = () => {
+      peer.closed++;
+      throw new Error("peer disposal failed");
+    };
+    first.stop = () => {
+      first.stops++;
+      throw new Error("track disposal failed");
+    };
+    await client.leave();
+    expect(states.at(-1)).toBe("idle");
+    expect([signaling.closed, peer.closed, healthy.closed, first.stops, second.stops]).toEqual([
+      1, 1, 1, 1, 1,
+    ]);
+    expect(errors.map((error) => error.message)).toEqual([
+      "socket disposal failed",
+      "peer disposal failed",
+      "track disposal failed",
+    ]);
+    await client.destroy();
+    expect(second.stops).toBe(1);
+  });
+
   test("leave observers share teardown without recursive cleanup", async () => {
     const { client, signaling, peer } = await setup();
     const local = new FakeTrack("owned");
@@ -279,6 +434,41 @@ describe("media controller resource ownership", () => {
 });
 
 describe("serialized negotiation", () => {
+  test("a rejected offer is a recoverable error and does not poison later peer work", async () => {
+    const { client, signaling, peer } = await setup();
+    const errors: Error[] = [];
+    let errorsTerminated = false;
+    client.errors$.subscribe({
+      next: (error) => errors.push(error),
+      error: () => {
+        errorsTerminated = true;
+      },
+    });
+    peer.offerGate = deferred<Description>();
+    peer.events.next({ type: "negotiation-needed" });
+    await settle();
+    const failure = new Error("temporary SDP generation failure");
+    peer.offerGate.reject(failure);
+    await settle();
+    expect(errors).toEqual([failure]);
+    expect(errorsTerminated).toBe(false);
+    expect(signaling.sent).toEqual([]);
+    expect(peer.closed).toBe(0);
+
+    peer.offerGate = undefined;
+    peer.events.next({ type: "negotiation-needed" });
+    await settle();
+    expect(signaling.sent.filter(({ payload }) => payload.type === "description")).toHaveLength(1);
+    signaling.events.next({
+      type: "signal",
+      from: "a",
+      payload: { type: "description", description: { type: "answer", sdp: "accepted" } },
+    });
+    await settle();
+    expect(peer.signalingState).toBe("stable");
+    await client.destroy();
+  });
+
   test("publication metadata uses its negotiated binding after local description", async () => {
     const { client, signaling, peer } = await setup();
     await client.publish({

@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { expect, type Page, test } from "@playwright/test";
 
 async function joined(page: Page): Promise<void> {
@@ -148,21 +148,64 @@ async function mediaDiagnostics(page: Page): Promise<unknown> {
       }
     ).__meshDebug;
     return {
+      visibility: document.visibilityState,
+      playback: [
+        ...document.querySelectorAll<HTMLMediaElement>(
+          "#remote-tracks video, #remote-tracks audio",
+        ),
+      ].map((element) => ({
+        tag: element.tagName,
+        tracks: (element.srcObject as MediaStream | null)
+          ?.getTracks()
+          .map((track) => ({ id: track.id, state: track.readyState, muted: track.muted })),
+        readyState: element.readyState,
+        paused: element.paused,
+        frames:
+          element instanceof HTMLVideoElement
+            ? element.getVideoPlaybackQuality().totalVideoFrames
+            : undefined,
+      })),
       log: debug?.log,
       peers: await Promise.all(
         (debug?.connections ?? []).map(async (connection) => {
           const stats: Record<string, unknown>[] = [];
           (await connection.getStats()).forEach((report) => {
             if (
-              ["inbound-rtp", "outbound-rtp", "transport", "data-channel"].includes(report.type)
+              [
+                "inbound-rtp",
+                "outbound-rtp",
+                "transport",
+                "data-channel",
+                "media-source",
+                "codec",
+              ].includes(report.type)
             ) {
               stats.push({
                 type: report.type,
+                id: report.id,
+                codecId: report.codecId,
+                mimeType: report.mimeType,
+                ssrc: report.ssrc,
                 kind: report.kind,
+                mid: report.mid,
+                trackIdentifier: report.trackIdentifier,
                 bytesReceived: report.bytesReceived,
                 bytesSent: report.bytesSent,
                 packetsReceived: report.packetsReceived,
+                packetsSent: report.packetsSent,
                 framesDecoded: report.framesDecoded,
+                framesEncoded: report.framesEncoded,
+                framesSent: report.framesSent,
+                frames: report.frames,
+                framesDropped: report.framesDropped,
+                framesPerSecond: report.framesPerSecond,
+                qualityLimitationReason: report.qualityLimitationReason,
+                nackCount: report.nackCount,
+                pliCount: report.pliCount,
+                packetsLost: report.packetsLost,
+                totalAudioEnergy: report.totalAudioEnergy,
+                totalSamplesDuration: report.totalSamplesDuration,
+                audioLevel: report.audioLevel,
                 dtlsState: report.dtlsState,
                 iceState: report.iceState,
                 state: report.state,
@@ -179,14 +222,45 @@ async function mediaDiagnostics(page: Page): Promise<unknown> {
               direction: transceiver.direction,
               currentDirection: transceiver.currentDirection,
               sender: transceiver.sender.track?.id,
+              senderState: transceiver.sender.track?.readyState,
+              senderMuted: transceiver.sender.track?.muted,
+              senderEnabled: transceiver.sender.track?.enabled,
+              senderEncodings: transceiver.sender.getParameters().encodings,
+              senderSettings: transceiver.sender.track
+                ? {
+                    width: transceiver.sender.track.getSettings().width,
+                    height: transceiver.sender.track.getSettings().height,
+                    frameRate: transceiver.sender.track.getSettings().frameRate,
+                  }
+                : undefined,
               receiver: transceiver.receiver.track.id,
               state: transceiver.receiver.track.readyState,
+              muted: transceiver.receiver.track.muted,
             })),
             stats,
           };
         }),
       ),
     };
+  });
+}
+
+async function receivedAudioBytes(page: Page): Promise<{ peer: number; bytes: number }[]> {
+  return page.evaluate(async () => {
+    const debug = (window as Window & { __meshDebug?: { connections: RTCPeerConnection[] } })
+      .__meshDebug;
+    const counters: { peer: number; bytes: number }[] = [];
+    for (const [peer, connection] of (debug?.connections ?? []).entries()) {
+      if (connection.connectionState !== "connected") continue;
+      let bytes = 0;
+      (await connection.getStats()).forEach((report) => {
+        if (report.type === "inbound-rtp" && report.kind === "audio") {
+          bytes += report.bytesReceived ?? 0;
+        }
+      });
+      counters.push({ peer, bytes });
+    }
+    return counters;
   });
 }
 
@@ -229,27 +303,19 @@ async function receiving(page: Page, videos: number, audio: number): Promise<voi
       .toBe(true);
   }
   if (audio > 0) {
+    const before = new Map(
+      (await receivedAudioBytes(page)).map(({ peer, bytes }) => [peer, bytes]),
+    );
+    // Each live connection must receive new audio. Old accumulated RTP counters are
+    // insufficient after unpublish/republish or a participant's leave/rejoin.
     await expect
-      .poll(() =>
-        page.evaluate(async () => {
-          const debug = (window as Window & { __meshDebug?: { connections: RTCPeerConnection[] } })
-            .__meshDebug;
-          let flowing = 0;
-          for (const connection of debug?.connections ?? []) {
-            if (connection.connectionState !== "connected") continue;
-            (await connection.getStats()).forEach((report) => {
-              if (
-                report.type === "inbound-rtp" &&
-                report.kind === "audio" &&
-                report.bytesReceived > 0
-              )
-                flowing++;
-            });
-          }
-          return flowing;
-        }),
+      .poll(
+        async () =>
+          (await receivedAudioBytes(page)).filter(
+            ({ peer, bytes }) => bytes > (before.get(peer) ?? 0),
+          ).length,
       )
-      .toBeGreaterThanOrEqual(audio);
+      .toBe(audio);
   }
 }
 
@@ -359,8 +425,10 @@ test("four independent peers send real WebRTC camera/audio and data, then releas
     expect(errors).toEqual([]);
   } catch (error) {
     const diagnostics = await Promise.all(pages.map(mediaDiagnostics));
+    const path = testInfo.outputPath("redacted-media-diagnostics.json");
+    await writeFile(path, JSON.stringify(diagnostics, null, 2));
     await testInfo.attach("redacted-media-diagnostics", {
-      body: JSON.stringify(diagnostics, null, 2),
+      path,
       contentType: "application/json",
     });
     throw error;

@@ -42,6 +42,8 @@ export function inspectArchitecture(sources: readonly Source[]): Violation[] {
           )
         : undefined;
       if (resolved) dependencies.push(resolved);
+      const external = !specifier.startsWith(".");
+      const rxjs = specifier === "rxjs" || specifier.startsWith("rxjs/");
       if (
         sdk &&
         (specifier.includes("@parentview/services") ||
@@ -56,17 +58,27 @@ export function inspectArchitecture(sources: readonly Source[]): Violation[] {
         core &&
         (specifier.startsWith("@tauri-apps/") ||
           specifier.includes("/browser") ||
+          (external && !rxjs && !resolved?.startsWith("packages/media-sdk/src/core/")) ||
           (resolved && !resolved.startsWith("packages/media-sdk/src/core/")))
       ) {
-        report("core-dependency", `Core imports implementation/composition: ${specifier}`);
+        report("core-dependency", `Core dependency is outside local ports/RxJS: ${specifier}`);
       }
       if (
         services &&
         (specifier.includes("/browser") ||
           specifier.startsWith("@tauri-apps/") ||
+          (resolved?.startsWith("packages/media-sdk/src/") &&
+            resolved !== aliases["@parentview/media-sdk"]) ||
+          (external &&
+            !rxjs &&
+            specifier !== "@parentview/media-sdk" &&
+            !resolved?.startsWith("packages/parentview-services/src/")) ||
           resolved?.startsWith("apps/"))
       ) {
-        report("service-dependency", `Service imports platform implementation: ${specifier}`);
+        report(
+          "service-dependency",
+          `Service dependency is outside local ports/RxJS/public SDK: ${specifier}`,
+        );
       }
     };
     const visit = (node: ts.Node): void => {
@@ -78,6 +90,13 @@ export function inspectArchitecture(sources: readonly Source[]): Violation[] {
         inspectImport(node.moduleSpecifier.text);
       }
       if (
+        ts.isImportTypeNode(node) &&
+        ts.isLiteralTypeNode(node.argument) &&
+        ts.isStringLiteralLike(node.argument.literal)
+      ) {
+        inspectImport(node.argument.literal.text);
+      }
+      if (
         ts.isCallExpression(node) &&
         (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
           (ts.isIdentifier(node.expression) && node.expression.text === "require"))
@@ -87,7 +106,7 @@ export function inspectArchitecture(sources: readonly Source[]): Violation[] {
         else if (core || services)
           report("dynamic-dependency", "Nonliteral imports can bypass layer checks");
       }
-      if (sdk && ts.isStringLiteral(node) && ["parent", "child"].includes(node.text)) {
+      if (sdk && ts.isStringLiteralLike(node) && ["parent", "child"].includes(node.text)) {
         report("role-neutral-sdk", `Product role literal: ${node.text}`);
       }
       if (sdk && ts.isIdentifier(node) && /^(ParentView|Parent|Child)([A-Z_]|$)/.test(node.text)) {

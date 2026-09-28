@@ -276,8 +276,22 @@ export class LabView {
     for (const track of tracks) {
       const key = `${track.peerId}:${track.id}`;
       retained.add(key);
-      if (this.remoteElements.has(key)) continue;
       const nativeTrack = this.playbackTrack(track.track);
+      const existing = this.remoteElements.get(key);
+      if (existing) {
+        const media = existing.querySelector("video, audio");
+        if (
+          media instanceof HTMLMediaElement &&
+          (!(media.srcObject instanceof MediaStream) ||
+            media.srcObject.getTracks()[0] !== nativeTrack)
+        ) {
+          media.srcObject = new MediaStream([nativeTrack]);
+          void media.play().catch(() => {
+            this.showNotice("자동 재생이 제한되었습니다. 수신 미디어의 재생 버튼을 눌러 주세요.");
+          });
+        }
+        continue;
+      }
       const card = document.createElement("article");
       card.className = `video-tile remote-tile ${nativeTrack.kind === "audio" ? "audio-tile" : ""}`;
       card.dataset.peerId = track.peerId;
@@ -347,6 +361,7 @@ export class LabView {
   }
 
   showNotice(message: string): void {
+    if (this.events.signal.aborted) return;
     clearTimeout(this.noticeTimer);
     this.element("notice").textContent = message;
     this.noticeTimer = setTimeout(() => {

@@ -28,6 +28,8 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Check architecture, types, style and tests
         run: bun run check
+      - name: Check standalone SDK package
+        run: bun run check:sdk-package
       - name: Build browser laboratory
         run: bun run build:web
 
@@ -50,3 +52,86 @@ jobs:
         run: cargo test --locked -p parentview-signaling
       - name: Lint signaling service
         run: cargo clippy --locked -p parentview-signaling --all-targets -- -D warnings
+
+  browser:
+    name: Browser mesh E2E
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CI: "true"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@v7.0.0
+        with:
+          node-version: "22.19.0"
+          package-manager-cache: false
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2.2.0
+        with:
+          bun-version: "1.1.24"
+      - name: Set up Rust 1.88.0
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal
+          rustup default 1.88.0
+      - name: Install locked dependencies
+        run: bun install --frozen-lockfile
+      - name: Install Chromium and system dependencies
+        run: bunx playwright install --with-deps chromium
+      - name: Build signaling server before browser startup
+        run: cargo build --locked -p parentview-signaling
+      - name: Verify real browser media and data paths
+        run: bun run test:e2e
+
+  macos:
+    name: macOS Tauri host
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@v7.0.0
+        with:
+          node-version: "22.19.0"
+          package-manager-cache: false
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2.2.0
+        with:
+          bun-version: "1.1.24"
+      - name: Set up Rust 1.88.0
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal
+          rustup default 1.88.0
+      - name: Install locked dependencies
+        run: bun install --frozen-lockfile
+      - name: Build browser assets for the native host
+        run: bun run build:web
+      - name: Test native host capability reporting
+        run: cargo test --locked -p parentview-desktop
+      - name: Build Tauri debug host without packaging
+        run: bun run --cwd apps/desktop tauri build --debug --no-bundle
+
+  required-checks:
+    name: Required checks
+    if: ${{ always() }}
+    needs: [typescript, rust, browser, macos]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require every regression check to pass
+        env:
+          TYPESCRIPT_RESULT: ${{ needs.typescript.result }}
+          RUST_RESULT: ${{ needs.rust.result }}
+          BROWSER_RESULT: ${{ needs.browser.result }}
+          MACOS_RESULT: ${{ needs.macos.result }}
+        run: |
+          test "$TYPESCRIPT_RESULT" = success
+          test "$RUST_RESULT" = success
+          test "$BROWSER_RESULT" = success
+          test "$MACOS_RESULT" = success

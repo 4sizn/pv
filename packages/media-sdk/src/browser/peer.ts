@@ -13,7 +13,7 @@ import { fromBrowserTrack, toBrowserTrack } from "./tracks.js";
 class BrowserPeer implements PeerPort {
   private readonly eventsSubject = new Subject<PeerEvent>();
   readonly events$ = this.eventsSubject.asObservable();
-  private readonly senders = new Map<string, RTCRtpSender>();
+  private readonly publications = new Map<string, RTCRtpTransceiver>();
   private readonly channels = new Set<RTCDataChannel>();
   private readonly trackListeners = new Map<MediaStreamTrack, () => void>();
   private dataChannel?: RTCDataChannel;
@@ -78,22 +78,27 @@ class BrowserPeer implements PeerPort {
   }
   addTrack(id: string, track: MediaTrackPort): void {
     const native = toBrowserTrack(track);
-    this.senders.set(id, this.connection.addTrack(native, new MediaStream([native])));
+    // Keep local publication senders separate from remote-created receiver transceivers.
+    // Chromium 153 can lose a sender's source on a later rollback when addTrack reused
+    // a receiver while answering an offer. The browser regression exercises that sequence.
+    const transceiver = this.connection.addTransceiver(native, {
+      direction: "sendonly",
+      streams: [new MediaStream([native])],
+    });
+    this.publications.set(id, transceiver);
   }
   removeTrack(id: string): void {
-    const sender = this.senders.get(id);
-    if (!sender) return;
-    this.connection.removeTrack(sender);
-    this.senders.delete(id);
+    const transceiver = this.publications.get(id);
+    if (!transceiver) return;
+    // The controller owns the capture track; stop only this publication's RTP resource.
+    // Negotiated stopped m-lines can then be recycled by the browser on later publication.
+    transceiver.stop();
+    this.publications.delete(id);
   }
   trackBindings(): readonly { id: string; mid: string }[] {
     const bindings: { id: string; mid: string }[] = [];
-    for (const [id, sender] of this.senders) {
-      const transceiver = this.connection
-        .getTransceivers()
-        .find((value) => value.sender === sender);
-      if (transceiver?.mid !== null && transceiver?.mid !== undefined)
-        bindings.push({ id, mid: transceiver.mid });
+    for (const [id, transceiver] of this.publications) {
+      if (transceiver.mid !== null) bindings.push({ id, mid: transceiver.mid });
     }
     return bindings;
   }
@@ -121,7 +126,7 @@ class BrowserPeer implements PeerPort {
     }
     this.channels.clear();
     this.dataChannel = undefined;
-    this.senders.clear();
+    this.publications.clear();
     connection.close();
     this.eventsSubject.complete();
   }

@@ -58,13 +58,21 @@ export function parseInvitation(value: string): RoomInvitation {
     const urls = typeof ice.urls === "string" ? [ice.urls] : ice.urls;
     if (
       !Array.isArray(urls) ||
-      !urls.every(
-        (url: unknown) => typeof url === "string" && /^(stun|stuns|turn|turns):/.test(url),
-      ) ||
+      urls.length === 0 ||
+      !urls.every(isIceUrl) ||
       (ice.username !== undefined && typeof ice.username !== "string") ||
       (ice.credential !== undefined && typeof ice.credential !== "string")
     ) {
       throw new Error("초대 링크의 ICE 설정이 올바르지 않습니다.");
+    }
+    if (
+      urls.some((url) => /^turns?:/i.test(url)) &&
+      (typeof ice.username !== "string" ||
+        ice.username.length === 0 ||
+        typeof ice.credential !== "string" ||
+        ice.credential.length === 0)
+    ) {
+      throw new Error("TURN 설정에는 사용자 이름과 자격 증명이 필요합니다.");
     }
     return {
       urls,
@@ -79,6 +87,22 @@ export function parseInvitation(value: string): RoomInvitation {
     signalingOrigin: parseOrigin(data.signalingOrigin),
     iceServers,
   };
+}
+
+/** Basic ICE URI forms only; the browser remains authoritative for full WebRTC validation. */
+function isIceUrl(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const match =
+    /^([A-Za-z]+):(\[[0-9a-fA-F:.]+\]|[^:[\]/?#@\s]+)(?::(\d+))?(?:\?transport=(udp|tcp))?$/.exec(
+      value,
+    );
+  if (!match) return false;
+  const scheme = match[1]?.toLowerCase();
+  const isTurn = scheme === "turn" || scheme === "turns";
+  if (!isTurn && scheme !== "stun" && scheme !== "stuns") return false;
+  if (!isTurn && match[4]) return false;
+  const port = match[3];
+  return port === undefined || (Number(port) > 0 && Number(port) <= 65_535);
 }
 
 /** Consume secrets before rendering. No invitation or credential is persisted. */
