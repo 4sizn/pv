@@ -438,7 +438,8 @@ test("four independent peers send real WebRTC camera/audio and data, then releas
 });
 
 test("mobile-width laboratory remains usable without horizontal overflow", async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
+  const viewport = { width: 390, height: 844 };
+  await page.setViewportSize(viewport);
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Mesh laboratory." })).toBeVisible();
   await expect(page.getByTestId("create-room")).toBeVisible();
@@ -446,5 +447,12 @@ test("mobile-width laboratory remains usable without horizontal overflow", async
     true,
   );
   await mkdir("proof", { recursive: true });
-  await page.screenshot({ path: "proof/mobile-laboratory.png", fullPage: true });
+  // Responsive proof records the tested viewport without requesting an off-viewport surface.
+  const screenshot = await page.screenshot({
+    path: "proof/mobile-laboratory.png",
+    fullPage: false,
+    scale: "css",
+  });
+  expect(screenshot.readUInt32BE(16)).toBe(viewport.width);
+  expect(screenshot.readUInt32BE(20)).toBe(viewport.height);
 });
