@@ -1,5 +1,5 @@
 {
   "extends": "./tsconfig.build.json",
   "compilerOptions": { "noEmit": true, "lib": ["ES2022"], "types": [] },
-  "include": ["src/index.ts", "src/core/**/*.ts"]
+  "include": ["src/index.ts", "src/core/**/*.ts", "src/native/**/*.ts"]
 }

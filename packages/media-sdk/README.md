@@ -1,6 +1,6 @@
 # Media SDK
 
-An independently buildable, role-neutral four-participant WebRTC mesh SDK. The initial runnable engine is the browser's WebRTC implementation. There is no native libwebrtc or Tauri dependency in this package.
+An independently buildable, role-neutral four-participant WebRTC mesh SDK. The browser entry uses the browser's WebRTC implementation. The separate native entry projects a host-provided Rust data runtime through an injected transport; this TypeScript package imports neither libwebrtc nor Tauri.
 
 ```ts
 import { createBrowserMediaClient, captureCamera, toBrowserTrack } from "@parentview/media-sdk/browser";
@@ -32,6 +32,8 @@ Device registration and room invitation management belong to the application. Co
 | `browser/signaling.ts` | One socket, bounded handshake timeout, wire validation | Reconnect/retry and room policy | Browser APIs, RxJS and core ports; close rejects pending handshake and removes listeners/timer |
 | `browser/tracks.ts` | Capture operation, native track conversion | Session or publication ownership | Browser media APIs and core ports; cancelled late results stop every acquired track |
 | `browser/index.ts` | Concrete dependency wiring | Domain decisions | Client and browser adapters; lifetime returned through client |
+| `native/client.ts` | Public native commands, readonly snapshots/events and one bounded IPC read pump | Session transitions, SDP/ICE, browser controller, product policy | RxJS and native transport port only; destroy cancels pending facade waits, awaits host destruction and completes streams |
+| `native/types.ts`, `native/index.ts` | DOM-free native data contract and public entry | Tauri, OS or engine construction | Types, RxJS Observable and native facade; concrete transport belongs to the host |
 
 `state$`, `peers$` and `tracks$` are snapshots. `messages$` and `errors$` are events. Errors never terminate a stream. `peers$` lists current remote membership, not proof that its data channel is open. `send()` surfaces not-yet-open/backpressure failures through `errors$`; applications can send after their connection/data readiness checks or retry a user action explicitly.
 
@@ -43,8 +45,47 @@ The browser adapter gives each local publication a dedicated `sendonly` transcei
 
 The signaling connection is deliberately reusable after `leave`; no automatic reconnection is attempted. A signaling disconnect ends the current session. Pending join promises are cancelled promptly, and generation checks prevent an old negotiation continuation from sending or mutating a later session.
 
+## Native data entry
+
+`@parentview/media-sdk/native` exports `NativeDataClient` and `NativeDataTransportPort`. This is a data-only client: it has no capture, publication or playback API. The browser `MediaController` owns browser sessions; the Rust actor owns native session, membership, readiness and negotiation state. The native facade only validates and projects Rust snapshots and events. These are separate implementations, never competing state owners for one connection.
+
+```ts
+import { NativeDataClient, type NativeDataTransportPort } from "@parentview/media-sdk/native";
+import { filter, firstValueFrom, timeout } from "rxjs";
+
+// Supplied by the host. The reusable SDK does not import a Tauri/OS adapter.
+declare const transport: NativeDataTransportPort;
+const client = await NativeDataClient.create({ transport });
+const incoming = client.messages$.subscribe(({ peerId, data }) => {
+  // Handle application messages; remote delivery requires your own receipt/correlation check.
+});
+try {
+  await client.join({ signalingUrl, roomId, roomToken, deviceToken, iceServers });
+  await firstValueFrom(client.readyPeers$.pipe(
+    filter((ids) => ids.includes(expectedPeerId)),
+    timeout({ first: 15_000 }),
+  ));
+  const result = await client.send("native data check");
+  if (result.failures.length || !result.acceptedPeerIds.includes(expectedPeerId)) {
+    throw new Error("The native engine did not accept this send for the expected peer");
+  }
+  await client.leave(); // reusable; Rust cancels pending session work
+} finally {
+  incoming.unsubscribe();
+  await client.destroy(); // terminal and idempotent; await host cleanup
+}
+```
+
+Native `state$`, `peers$` and `readyPeers$` are readonly snapshots. `peers$` describes native peer membership; `readyPeers$` contains peers whose actual native data channel is open. A completed `join()` or nonempty membership snapshot does not guarantee channel readiness. `messages$` and `errors$` are events, and recoverable errors are values rather than terminal stream errors. The transport permits one pending read per client and returns at most 32 events per batch.
+
+Native `send()` accepts a UTF-8 string of at most 16,384 bytes and returns `acceptedPeerIds` plus per-peer `failures`. Acceptance means the local engine accepted the send; it does not acknowledge delivery to the remote application. Subscribe before sending when a workflow must prove a specific receive event. The native client does not retry sends or reconnect automatically, and readiness can change between checking a snapshot and calling `send()`.
+
+Unsubscribing an Rx observer or timing out a wait does not cancel a native operation. Use `leave()` to cancel the current native session while retaining a reusable client, and await `destroy()` for terminal resource cleanup. Destruction rejects pending facade commands, ignores their late completions, stops event reads and completes the observables. A host cleanup failure rejects destruction; the facade remains terminal and later destruction calls share the same result. Failed creation also requests transport cleanup. Host document/window teardown supplies a final ownership boundary independently of page JavaScript.
+
+The desktop composition provides `createTauriNativeDataClient()` and a developer probe that creates two native peers and checks exact bidirectional delivery plus cleanup. Native data capability is currently gated to macOS. `nativeMedia` and remote input remain false; Android, iOS and Windows native data operation, native capture/rendering and TURN traversal remain unverified. Actual macOS Tauri IPC/Rx delivery was verified separately from facade tests; see [the native report](../../docs/native-verification.md).
+
 ## Build and validation
 
-From the workspace root, install with `bun install`; in this package run `bun run build` and `bun test tests`. The build first checks core against `ES2022` with no DOM or runtime ambient types, then emits ESM and declaration files under `dist`. `rxjs` is a peer dependency. Exports are the DOM-free core and separate `./browser` composition entry.
+From the workspace root, install with `bun install`; in this package run `bun run build` and `bun test tests`. The build first checks core and native facade against `ES2022` with no DOM or runtime ambient types, then emits ESM and declaration files under `dist`. `rxjs` is a peer dependency. Exports are the DOM-free core, `./native` facade and separate `./browser` composition entry.
 
-Tests cover late join/offer completion, repeated teardown, failed publication ownership, peer departure, early ICE, offer collisions, deferred renegotiation, socket reuse/wire validation and late capture cancellation. Actual browser mesh exchange is an integration acceptance check separate from these fake-adapter tests. Native media, remote input, TURN relay, network recovery and four-target OS validation remain separate work.
+Tests cover late join/offer completion, repeated teardown, failed publication ownership, peer departure, early ICE, offer collisions, deferred renegotiation, socket reuse/wire validation and late capture cancellation. Native facade tests cover snapshot authority, actual readiness projection, event/command bounds, stale and late completion, cancellation and failed cleanup. Actual browser mesh and native engine exchange are separate integration acceptance checks; facade or fake-adapter tests cannot replace them. Native media, remote input, TURN relay, network recovery and four-target OS validation remain separate work.

@@ -34,7 +34,7 @@ jobs:
         run: bun run build:web
 
   rust:
-    name: Rust signaling service
+    name: Rust signaling and runtime
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -48,10 +48,10 @@ jobs:
           rustup default 1.88.0
       - name: Check Rust formatting
         run: cargo fmt --all --check
-      - name: Test signaling service
-        run: cargo test --locked -p parentview-signaling
-      - name: Lint signaling service
-        run: cargo clippy --locked -p parentview-signaling --all-targets -- -D warnings
+      - name: Test signaling and platform-free native runtime
+        run: cargo test --locked -p parentview-signaling -p pv-media-runtime
+      - name: Lint signaling and platform-free native runtime
+        run: cargo clippy --locked -p parentview-signaling -p pv-media-runtime --all-targets -- -D warnings
 
   browser:
     name: Browser mesh E2E
@@ -87,9 +87,9 @@ jobs:
         run: bun run test:e2e
 
   macos:
-    name: macOS Tauri host
+    name: macOS native mesh and Tauri host
     runs-on: macos-15
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - name: Check out source
         uses: actions/checkout@v7.0.1
@@ -106,14 +106,18 @@ jobs:
           bun-version: "1.1.24"
       - name: Set up Rust 1.88.0
         run: |
-          rustup toolchain install 1.88.0 --profile minimal
+          rustup toolchain install 1.88.0 --profile minimal --component clippy
           rustup default 1.88.0
       - name: Install locked dependencies
         run: bun install --frozen-lockfile
       - name: Build browser assets for the native host
         run: bun run build:web
-      - name: Test native host capability reporting
+      - name: Test actual native mesh and runtime teardown
+        run: cargo test --locked -p pv-media-native
+      - name: Test native host ownership and capability reporting
         run: cargo test --locked -p parentview-desktop
+      - name: Lint native engine, runtime and host
+        run: cargo clippy --locked -p pv-media-runtime -p pv-media-libwebrtc -p pv-media-native -p parentview-desktop --all-targets -- -D warnings
       - name: Build Tauri debug host without packaging
         run: bun run --cwd apps/desktop tauri build --debug --no-bundle
 

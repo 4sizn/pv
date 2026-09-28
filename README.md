@@ -7,6 +7,7 @@
 ## 현재 제공하는 기반
 
 - `packages/media-sdk`: 독립 ESM/타입 선언 빌드, Rx 공개 API, 역할 없는 4인 mesh, 브라우저 WebRTC 어댑터.
+- `crates/media-runtime`, `media-libwebrtc`, `media-native`: 역할 없는 Rust/Tokio 세션, raw libwebrtc 어댑터, 인증 시그널링 구성. macOS 네이티브 데이터 채널을 제공하며 영상 캡처는 후속 단계입니다.
 - `packages/parentview-services`: 명시적 역할 정책, 세션·화면 동의·배타적 제어권, Network/Device 서비스와 주입 가능한 포트. 실제 OS 입력 구현은 포함하지 않습니다.
 - `services/signaling`: Rust/Tokio/Axum 기기 인증, 방 초대, 동일 방 시그널 전달, 정원·만료·큐 제한, coturn 임시 자격 증명.
 - `apps/desktop`: 실제 카메라·음성·화면·데이터 전송을 확인하는 개발자 실험실과 Tauri 호스트. 완성된 부모·자녀 서비스 UI가 아닙니다.
@@ -42,6 +43,9 @@ bun run verify
 # 업로드 전: 기본 검사 + 실제 4인 WebRTC 브라우저 E2E
 bun run verify:all
 
+# macOS에서 실제 네이티브 4피어 데이터 전송과 런타임 검증
+bun run verify:native
+
 # Tauri 개발 도구가 설치된 macOS에서 호스트 테스트와 debug 실행 파일 빌드
 bun run verify:desktop
 ```
@@ -65,19 +69,20 @@ docker compose -f infra/compose.yaml up -d
 
 ## 다음 구현 단계
 
-1. 네이티브 libwebrtc 엔진과 Android·iOS·Windows·macOS 캡처/렌더 어댑터. 원본 영상은 JS JSON IPC로 보내지 않습니다.
+1. 네이티브 데이터 경로 위에 미디어 송수신과 Android·iOS·Windows·macOS 캡처/렌더 어댑터. 원본 영상은 JS JSON IPC로 보내지 않습니다.
 2. 영속적인 기기 인증·QR/코드 가족 페어링, 부모·자녀 서비스 UI와 도움 요청/승인 프로토콜.
 3. Android·Windows·macOS의 실제 원격 입력과 수신 측 권한 검사. iOS 기기 전체 입력 제어는 지원한다고 가정하지 않습니다.
 4. 시그널링 복구·ICE restart, 네트워크 전환, TURN 강제 경로, 화면+카메라 동시 송출 성능과 실기기 검증.
 
-Tauri 호스트는 현재 `nativeMedia: false`, `remoteInput: false`를 반환합니다. OS별 기능 지원 여부는 실제 구현과 검증 후에만 바꿉니다. 현재 SDK는 시그널링이 끊기면 세션을 정리하며 자동 재접속하지 않습니다. 현재 서버는 공개 운영 서비스용 인증·배포 구성이 아닙니다.
+macOS Tauri 호스트는 `nativeDataChannels: true`, `nativeMedia: false`, `remoteInput: false`를 반환합니다. 앱의 네이티브 검사 버튼은 별도 인증된 두 네이티브 세션으로 양방향 메시지와 자원 해제를 확인합니다. OS별 기능 지원 여부는 실제 구현과 검증 후에만 바꿉니다. 현재 SDK는 시그널링이 끊기면 세션을 정리하며 자동 재접속하지 않습니다. 현재 서버는 공개 운영 서비스용 인증·배포 구성이 아닙니다.
 
 ## 설계 기준
 
 - [아키텍처와 소유권](docs/architecture.md)
 - [시그널링/SDK 계약](docs/protocol.md)
 - [초기 구현 계획](docs/plans/2026-09-28-bootstrap.md)
-- [검증 결과와 남은 범위](docs/verification.md)
+- [브라우저 기반 검증 결과](docs/verification.md)
+- [네이티브 데이터 검증 결과](docs/native-verification.md)
 - [SDK 사용과 종료 계약](packages/media-sdk/README.md)
 - [시그널링 설정과 운영 제한](services/signaling/README.md)
 - [검증 UI와 호스트](apps/desktop/README.md)

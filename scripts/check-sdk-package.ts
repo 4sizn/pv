@@ -39,6 +39,7 @@ try {
 import { Subject } from "rxjs";
 import { MediaClient } from "@parentview/media-sdk";
 import { createBrowserMediaClient } from "@parentview/media-sdk/browser";
+import { NativeDataClient } from "@parentview/media-sdk/native";
 
 assert.equal(typeof globalThis.window, "undefined");
 assert.equal(typeof createBrowserMediaClient, "function");
@@ -69,6 +70,32 @@ assert.equal(stops, 1, "packed client must release an owned capture exactly once
 assert.equal(closes, 1, "idle teardown must not close signaling twice");
 assert.equal(completed, true);
 assert.deepEqual(states, ["idle", "joining", "joined", "leaving", "idle", "destroyed"]);
+
+let nativeCloses = 0;
+const nativeSnapshot = (revision, state, peerId = null, peers = [], readyPeers = []) =>
+  ({ revision, state, peerId, peers, readyPeers });
+const native = await NativeDataClient.create({ transport: {
+  open: async () => nativeSnapshot(0, "idle"),
+  readBatch: () => new Promise(() => {}),
+  join: async () => nativeSnapshot(1, "joined", "local", ["remote"], ["remote"]),
+  send: async () => ({ acceptedPeerIds: ["remote"], failures: [] }),
+  leave: async () => nativeSnapshot(2, "idle"),
+  destroy: async () => { nativeCloses++; return nativeSnapshot(3, "destroyed"); },
+} });
+const nativeStates = [];
+let nativeCompleted = false;
+native.state$.subscribe({ next: value => nativeStates.push(value), complete: () => { nativeCompleted = true; } });
+for (const stream of [native.state$, native.peers$, native.readyPeers$, native.messages$, native.errors$]) {
+  assert.equal(typeof stream.next, "undefined");
+}
+await native.join({ signalingUrl: "ws://localhost:8787/ws", roomId: "r", roomToken: "t", deviceToken: "d" });
+assert.deepEqual(await native.send("data"), { acceptedPeerIds: ["remote"], failures: [] });
+await native.leave();
+await native.destroy();
+await native.destroy();
+assert.equal(nativeCloses, 1);
+assert.equal(nativeCompleted, true);
+assert.deepEqual(nativeStates, ["idle", "joined", "idle", "destroyed"]);
 `,
   );
   execute("node", ["consumer.mjs"]);
@@ -76,6 +103,7 @@ assert.deepEqual(states, ["idle", "joining", "joined", "leaving", "idle", "destr
     join(scratch, "consumer.mts"),
     `import { MediaClient, type MediaClientDependencies, type MediaState } from "@parentview/media-sdk";
 import type { Observable } from "rxjs";
+import { NativeDataClient, type NativeDataTransportPort, type NativeDataSendResult } from "@parentview/media-sdk/native";
 declare const dependencies: MediaClientDependencies;
 const client = new MediaClient(dependencies);
 const states: Observable<MediaState> = client.state$;
@@ -89,6 +117,19 @@ void client.join({ roomId: "r", roomToken: "t", deviceToken: "d", role: "parent"
 // @ts-expect-error This consumer intentionally has no browser ambient types.
 const browserOnly: RTCPeerConnection = {};
 void browserOnly;
+declare const transport: NativeDataTransportPort;
+const native = await NativeDataClient.create({ transport });
+const ready: Observable<readonly string[]> = native.readyPeers$;
+void ready;
+const receipt: NativeDataSendResult = await native.send("application data");
+void receipt;
+// @ts-expect-error Native snapshots remain readonly Observable projections.
+native.state$.next("joined");
+// @ts-expect-error The native data entry does not claim an unimplemented capture API.
+native.publish({});
+// @ts-expect-error Product roles are not native session admission options.
+void native.join({ signalingUrl: "ws://localhost/ws", roomId: "r", roomToken: "t", deviceToken: "d", role: "parent" });
+await native.destroy();
 `,
   );
   await writeFile(

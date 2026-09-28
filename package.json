@@ -19,12 +19,13 @@
     "build:sdk": "bun run --cwd packages/media-sdk build",
     "build:web": "bun run build:sdk && bun run --cwd apps/desktop build",
     "check": "bun run build:sdk && bun run check:architecture && bun run typecheck && bun run lint && bun run test",
-    "test:rust": "cargo test --locked -p parentview-signaling",
+    "test:rust": "cargo test --locked -p parentview-signaling -p pv-media-runtime",
     "test:e2e": "playwright test",
-    "verify": "bun run check && bun run check:sdk-package && cargo fmt --all --check && bun run test:rust && cargo clippy --locked -p parentview-signaling --all-targets -- -D warnings && bun run build:web",
+    "verify": "bun run check && bun run check:sdk-package && cargo fmt --all --check && bun run test:rust && cargo clippy --locked -p parentview-signaling -p pv-media-runtime --all-targets -- -D warnings && bun run build:web",
     "verify:all": "bun run verify && bun run test:e2e",
     "verify:desktop": "bun run build:web && cargo test --locked -p parentview-desktop && cargo clippy --locked -p parentview-desktop --all-targets -- -D warnings && bun run --cwd apps/desktop tauri build --debug --no-bundle",
-    "build:desktop": "bun run build:sdk && bun run --cwd apps/desktop tauri build --no-bundle"
+    "build:desktop": "bun run build:sdk && bun run --cwd apps/desktop tauri build --no-bundle",
+    "verify:native": "cargo test --locked -p pv-media-runtime -p pv-media-native && cargo clippy --locked -p pv-media-runtime -p pv-media-libwebrtc -p pv-media-native --all-targets -- -D warnings"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.14",

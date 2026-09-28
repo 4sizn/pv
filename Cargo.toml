@@ -1,5 +1,5 @@
 [workspace]
-members = ["services/signaling", "apps/desktop/src-tauri"]
+members = ["services/signaling", "apps/desktop/src-tauri", "crates/media-runtime", "crates/media-libwebrtc", "crates/media-native"]
 default-members = ["services/signaling"]
 resolver = "2"
 

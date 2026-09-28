@@ -1,6 +1,6 @@
 # Prepublication verification — 2026-09-28
 
-This report covers the first repository milestone: a role-neutral browser media SDK, ParentView service contracts, authenticated signaling and a Tauri laboratory host. It does not certify the finished cross-platform product.
+This report covers the first repository milestone: a role-neutral browser media SDK, ParentView service contracts, authenticated signaling and a Tauri laboratory host. It does not certify the finished cross-platform product. The subsequent Rust native-data slice has its own [verification report](native-verification.md).
 
 Environment: macOS arm64, Node.js 22.19.0, Bun 1.1.24, Rust 1.88.0, installed Google Chrome, Playwright 1.63.0 and its Chromium 153.0.8010.12. `CI=true` selects downloaded Chromium on this same Mac; it does not reproduce a hosted Linux runner.
 
@@ -51,7 +51,7 @@ The earlier bootstrap also passed required-secret Compose configuration validati
 - Long-lived authenticated device pairing, distributed help approval and the actual parent/child product UI. Current service policy tests use injected ports and trusted participant records.
 - TURN traversal, public Internet/cross-device networking and Docker relay address mapping. Docker's daemon was unavailable; [the container template needs a tested relay topology](../infra/README.md).
 - Automatic signaling recovery, ICE restart and network changes. Current disconnect handling ends the media session.
-- Hosted CI execution and repository rulesets. Four jobs and the aggregate **Required checks** are prepared; the aggregate condition was exercised against every success/failure/cancellation/skip combination. YAML/action inputs were checked against official tagged actions. The workflow skill's `ci_monitor.cjs` helper was absent, so that helper's action-version check could not run. No GitHub remote or CI run was created.
+- Repository merge rulesets remain unconfigured. Hosted baseline CI now passed at `58cae49`: [all four jobs and Required checks](https://github.com/4sizn/pv/actions/runs/36406077400). The first hosted run exposed a Linux full-page mobile screenshot failure after layout assertions had passed; viewport capture plus explicit PNG dimensions fixed the proof capture without weakening layout/media assertions or adding retries. The workflow skill's optional `ci_monitor.cjs` helper was absent; hosted runs were inspected with the GitHub CLI.
 - Production enrollment/rate controls, durable credentials/storage and deployment configuration.
 
-Git history is local on `codex/bootstrap`. The destination is `4sizn/pv`; no code was pushed and no branch-protection setting was changed. See [the repeatable checks](testing.md). No old ParentView data or runtime compatibility is required.
+The baseline is published to `4sizn/pv` on `codex/bootstrap`; no branch-protection setting was changed. See [the repeatable checks](testing.md). No old ParentView data or runtime compatibility is required.

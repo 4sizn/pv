@@ -15,3 +15,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 serde.workspace = true
 tauri = { version = "2", features = [] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+pv-media-native = { path = "../../../crates/media-native" }
+tokio.workspace = true

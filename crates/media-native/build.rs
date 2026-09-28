@@ -1,7 +1,5 @@
 fn main() {
-    // libwebrtc's Objective-C categories must survive the final application's linker pass.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
         println!("cargo:rustc-link-arg=-ObjC");
     }
-    tauri_build::build();
 }

@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "ParentView · Mesh laboratory",
+        "title": "ParentView \u00b7 Mesh laboratory",
         "width": 1440,
         "height": 1000,
         "minWidth": 780,
@@ -34,6 +34,11 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "macOS": { "infoPlist": "Info.plist" }
+    "macOS": {
+      "infoPlist": "Info.plist"
+    },
+    "resources": {
+      "../../../crates/media-libwebrtc/licenses/": "licenses/"
+    }
   }
 }

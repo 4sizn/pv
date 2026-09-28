@@ -1,0 +1,21 @@
+[package]
+name = "pv-media-native"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+pv-media-runtime = { path = "../media-runtime" }
+pv-media-libwebrtc = { path = "../media-libwebrtc" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+futures-util = "0.3"
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-native-roots"] }
+url = "2"
+
+[dev-dependencies]
+parentview-signaling = { path = "../../services/signaling" }
+axum = "0.8"
+tower = { version = "0.5", features = ["util"] }

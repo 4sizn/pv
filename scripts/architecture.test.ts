@@ -165,3 +165,34 @@ test("layer rules preserve RxJS, local ports, public SDK types and concrete adap
     ]),
   ).toEqual([]);
 });
+
+test("native facade rejects platforms and a second TypeScript session controller", () => {
+  const failures = inspectArchitecture([
+    {
+      path: "packages/media-sdk/src/native/client.ts",
+      text: 'import "@tauri-apps/api/core"; import "node:net"; import "../browser/index.js"; import "../core/controller.js"; navigator.onLine; import(variable); export type Role = "parent";',
+    },
+    { path: "packages/media-sdk/src/browser/index.ts", text: "export {};" },
+    { path: "packages/media-sdk/src/core/controller.ts", text: "export {};" },
+  ]);
+  expect(failures.filter((failure) => failure.rule === "core-dependency")).toHaveLength(4);
+  expect(failures.some((failure) => failure.rule === "platform-free-core")).toBe(true);
+  expect(failures.some((failure) => failure.rule === "dynamic-dependency")).toBe(true);
+  expect(failures.some((failure) => failure.rule === "role-neutral-sdk")).toBe(true);
+});
+
+test("services may use the public native SDK but cannot reach its private implementation", () => {
+  const sources = [
+    { path: "packages/media-sdk/src/native/index.ts", text: 'export * from "./types.js";' },
+    { path: "packages/media-sdk/src/native/types.ts", text: "export type Port = {};" },
+    {
+      path: "packages/parentview-services/src/session.ts",
+      text: 'import type { Port } from "@parentview/media-sdk/native";',
+    },
+  ];
+  expect(inspectArchitecture(sources)).toEqual([]);
+  sources[2].text = 'import type { Port } from "../../media-sdk/src/native/types.js";';
+  expect(
+    inspectArchitecture(sources).some((failure) => failure.rule === "service-dependency"),
+  ).toBe(true);
+});

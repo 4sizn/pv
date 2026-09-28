@@ -1,0 +1,2 @@
+# Preserve upstream license notices byte-for-byte, including their whitespace.
+crates/media-libwebrtc/licenses/*.md -whitespace

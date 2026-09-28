@@ -1,5 +1,6 @@
 import type { MediaState, RemoteTrack } from "@parentview/media-sdk";
 import type { CaptureKind } from "./browser-capture";
+import type { NativeProbeStatus } from "./native-data-probe";
 
 export interface LabActions {
   create(): void;
@@ -109,9 +110,15 @@ const template = `
             <form id="message-form" class="message-form"><label class="sr-only" for="message-input">전송할 메시지</label><input id="message-input" placeholder="연결된 기기에 메시지 보내기" maxlength="4096" autocomplete="off" disabled data-testid="message-input" /><button id="send-message" class="button primary" type="submit" disabled data-testid="send-message">보내기 <span aria-hidden="true">↗</span></button></form>
             <ol id="message-log" class="message-log" aria-live="polite" aria-label="메시지 기록"><li class="log-empty">메시지를 보내면 송수신 기록이 여기에 표시됩니다.</li></ol>
           </section>
+          <section id="native-probe-section" class="data-section" aria-labelledby="native-probe-title" hidden>
+            <div class="section-heading"><div class="heading-with-note"><h2 id="native-probe-title">네이티브 데이터 검사</h2><span>이 호스트 안의 두 네이티브 피어</span></div><span class="source-tag">NATIVE · DATA ONLY</span></div>
+            <p class="field-help">Rust WebRTC 엔진의 양방향 메시지와 자원 해제를 확인합니다. 네이티브 미디어 · 원격 입력 검사는 포함하지 않습니다.</p>
+            <button id="native-probe-start" class="button secondary" type="button" data-testid="native-probe-start">네이티브 데이터 검사 시작</button>
+            <p id="native-probe-status" class="field-help" role="status" aria-live="polite" data-testid="native-probe-status">검사 전 · 시그널링 서버가 실행 중이어야 합니다.</p>
+          </section>
         </div>
       </div>
-      <footer><span>ParentView Next <span class="footer-dot">·</span> Browser validation surface</span><span>최대 4기기 <span class="footer-dot">/</span> 역할 없는 미디어 SDK <span class="footer-dot">/</span> Native adapters pending</span></footer>
+      <footer><span>ParentView Next <span class="footer-dot">·</span> Browser validation surface</span><span>최대 4기기 <span class="footer-dot">/</span> 역할 없는 미디어 SDK <span class="footer-dot">/</span> Native media pending</span></footer>
     </main>
     <div id="notice" class="notice" role="status" aria-live="polite"></div>
   </div>
@@ -170,6 +177,29 @@ export class LabView {
     return this.element<HTMLInputElement>("server-origin").value;
   }
 
+  bindNativeProbe(action: () => void): void {
+    this.element("native-probe-start").addEventListener("click", action, {
+      signal: this.events.signal,
+    });
+  }
+
+  enableNativeProbe(): void {
+    if (this.events.signal.aborted) return;
+    this.element("native-probe-section").hidden = false;
+  }
+
+  setNativeProbe(status: NativeProbeStatus, message: string): void {
+    if (this.events.signal.aborted) return;
+    const running = status === "running";
+    const button = this.element<HTMLButtonElement>("native-probe-start");
+    button.disabled = running;
+    button.textContent = running ? "네이티브 데이터 검사 중…" : "네이티브 데이터 다시 검사";
+    this.element("native-probe-section").setAttribute("aria-busy", String(running));
+    const label = this.element("native-probe-status");
+    label.dataset.state = status;
+    label.textContent = message;
+  }
+
   get invitation(): string {
     return this.element<HTMLTextAreaElement>("invitation-input").value;
   }
@@ -197,7 +227,7 @@ export class LabView {
       : "브라우저 어댑터";
     if (platform) {
       this.element("native-status").textContent =
-        "호스트는 네이티브 미디어 · 원격 입력 미구현 상태를 보고했습니다. 현재 화면은 WebView 브라우저 어댑터를 사용합니다.";
+        "카메라·음성·화면 공유는 WebView 브라우저 어댑터로 검증합니다. 네이티브 미디어·원격 입력은 아직 지원하지 않습니다.";
     }
   }
 
